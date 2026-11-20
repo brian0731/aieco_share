@@ -4,6 +4,7 @@ import { changeExchange, proposeExchange, publishItem } from '../../utils/exchan
 import { changeRating, reputation } from '../../utils/ratings'
 import { loginMember, loginRateLimit, registerMember } from '../../utils/member-auth'
 import { hongKongDistrictIds } from '../../utils/districts'
+import { adminDashboard } from '../../utils/admin-dashboard'
 
 async function publicBoard(db: Db, communities: readonly string[]) {
   const districtParameters = communities.map(() => '?').join(',')
@@ -48,17 +49,7 @@ export default defineEventHandler(async (event) => {
   }
   if (event.method === 'GET' && !id && resource === 'admin') {
     if (actor.role !== 'admin') fail(403, 'admin_required')
-    const [members, services, ledger, items, exchanges, disputes, audit] = await Promise.all([
-      rows(db, 'SELECT id,name,role,balance FROM members WHERE community_id=? ORDER BY id LIMIT 100', [community]),
-      rows(db, 'SELECT * FROM services WHERE community_id=? ORDER BY id LIMIT 100', [community]),
-      rows(db, 'SELECT * FROM time_journals WHERE community_id=? ORDER BY created_at DESC LIMIT 100', [community]),
-      rows(db, 'SELECT * FROM items WHERE community_id=? ORDER BY created_at DESC LIMIT 100', [community]),
-      rows(db, `SELECT id,offered_id,wanted_id,proposer_id,owner_id,state,expires_at,completed_at
-        FROM exchanges WHERE community_id=? ORDER BY id LIMIT 100`, [community]),
-      rows(db, 'SELECT * FROM disputes WHERE community_id=? ORDER BY created_at DESC LIMIT 100', [community]),
-      rows(db, 'SELECT * FROM audit_log WHERE community_id=? ORDER BY id DESC LIMIT 100', [community]),
-    ])
-    return { members, services, ledger, items, exchanges, disputes, audit }
+    return adminDashboard(db, actor)
   }
   if (event.method === 'GET' && !id && resource === 'home') {
     const [[account], board, services, entries, members, exchanges, ratings, disputes] = await Promise.all([

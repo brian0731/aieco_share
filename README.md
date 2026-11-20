@@ -4,7 +4,7 @@
 
 社區救生圈是面向香港十八區的街坊互助 App。居民可找支援、提供協助、用時間帳記錄互助時數、交換物品，以及在光網聊天室聯絡附近街坊。
 
-[網頁管理後台](https://lifebuoy.aieco.hk/) · [Nuxt 後端安裝](#本機安裝-nuxt-後端) · [Android 本機建置](#android-本機建置)
+[Nuxt 後端安裝](#本機安裝-nuxt-後端) · [Android 本機建置](#android-本機建置)
 
 ![香港舊區街坊互助插畫](assets/images/lifebuoy/community.webp)
 

@@ -11,6 +11,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@iconify-json/lucide": "1.2.157",
+    "@nuxt/ui": "4.13.0",
     "@prisma/client": "6.19.3",
     "dotenv": "17.2.3",
     "mysql2": "3.24.6",
