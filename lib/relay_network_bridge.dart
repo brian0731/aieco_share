@@ -12,12 +12,14 @@ class RelayNetworkBridge extends ChangeNotifier {
   RelayNetworkBridge({
     required this.localRelayUrl,
     this.onConnected,
+    this.forwardPacket,
     this.retryDelay = const Duration(seconds: 5),
     Future<WebSocket> Function(String)? connect,
   }) : _connect = connect ?? WebSocket.connect;
 
   final String localRelayUrl;
   final VoidCallback? onConnected;
+  final bool Function(Map<String, dynamic>)? forwardPacket;
   final Duration retryDelay;
   final Future<WebSocket> Function(String) _connect;
   final String _id =
@@ -186,6 +188,7 @@ class RelayNetworkBridge extends ChangeNotifier {
           !_kinds.contains(decoded['kind'])) {
         return;
       }
+      if (forwardPacket?.call(decoded) == false) return;
       final rawPath = decoded.remove(_pathKey);
       if (rawPath != null &&
           (rawPath is! List || rawPath.any((id) => id is! String))) {

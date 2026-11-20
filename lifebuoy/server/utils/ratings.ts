@@ -75,29 +75,51 @@ export async function changeRating(db: PoolConnection, actor: Actor, kind: Trade
   return { stars }
 }
 
-export async function reputation(db: Db, actor: Actor, id: string) {
-  const community = actor.community_id
-  const [member] = await rows<{ id: string; name: string }>(db,
-    'SELECT id,name FROM members WHERE community_id=? AND id=?', [community,id])
-  if (!member) fail(404, 'member_not_found')
-  const [stats] = await rows<{ count: number; score: string | null }>(db, `
-    WITH trades AS (
-      SELECT id,'service' AS kind,completed_at FROM services WHERE community_id=? AND state='settled'
+export async function memberReputations(db: Db, community: string, id?: string) {
+  const members = await rows<{
+    id: string; name: string; count: number | string; score: number | string | null; completed_count: number | string
+  }>(db, `
+    WITH listed AS (
+      SELECT id,name FROM members WHERE community_id=? ${id === undefined ? '' : 'AND id=?'}
+      ORDER BY name,id LIMIT 100
+    ), trades AS (
+      SELECT id,'service' AS kind,completed_at,payer_id AS first_id,provider_id AS second_id
+      FROM services WHERE community_id=? AND state='settled'
       UNION ALL
-      SELECT id,'exchange' AS kind,completed_at FROM exchanges WHERE community_id=? AND state='completed'
+      SELECT id,'exchange' AS kind,completed_at,proposer_id,owner_id
+      FROM exchanges WHERE community_id=? AND state='completed'
+    ), participants AS (
+      SELECT first_id AS member_id FROM trades
+      UNION ALL
+      SELECT second_id FROM trades
+    ), activity AS (
+      SELECT p.member_id,COUNT(*) AS completed_count FROM participants p
+      JOIN listed m ON m.id=p.member_id GROUP BY p.member_id
     ), ranked AS (
-      SELECT r.stars,ROW_NUMBER() OVER (
-        PARTITION BY r.reviewer_id ORDER BY t.completed_at DESC,r.kind DESC,r.trade_id DESC
+      SELECT r.subject_id,r.stars,ROW_NUMBER() OVER (
+        PARTITION BY r.subject_id,r.reviewer_id ORDER BY t.completed_at DESC,r.kind DESC,r.trade_id DESC
       ) AS position
       FROM ratings r JOIN trades t ON (t.kind,t.id)=(r.kind,r.trade_id)
+      JOIN listed m ON m.id=r.subject_id
       LEFT JOIN disputes d ON (d.community_id,d.kind,d.trade_id)=(r.community_id,r.kind,r.trade_id)
-      WHERE r.community_id=? AND r.subject_id=? AND (d.trade_id IS NULL OR d.outcome='restore')
-        AND (UTC_TIMESTAMP(6)>=t.completed_at+INTERVAL 7 DAY OR EXISTS (
-          SELECT 1 FROM ratings peer WHERE (peer.community_id,peer.kind,peer.trade_id,peer.reviewer_id)
-          =(r.community_id,r.kind,r.trade_id,r.subject_id)
-        ))
+      WHERE r.community_id=? AND (d.trade_id IS NULL OR d.outcome='restore')
+    ), scores AS (
+      SELECT subject_id,COUNT(*) AS count,ROUND(AVG(stars),1) AS score
+      FROM ranked WHERE position=1 GROUP BY subject_id
     )
-    SELECT COUNT(*) AS count,CASE WHEN COUNT(*)>=3 THEN ROUND(AVG(stars),1) END AS score
-    FROM ranked WHERE position=1`, [community,community,community,id])
-  return { ...member, count: stats.count, score: stats.score == null ? null : Number(stats.score) }
+    SELECT m.id,m.name,COALESCE(s.count,0) AS count,s.score,COALESCE(a.completed_count,0) AS completed_count
+    FROM listed m LEFT JOIN scores s ON s.subject_id=m.id LEFT JOIN activity a ON a.member_id=m.id
+    ORDER BY m.name,m.id`, id === undefined ? [community,community,community,community] : [community,id,community,community,community])
+  return members.map(member => ({
+    ...member,
+    count: Number(member.count),
+    score: member.score == null ? null : Number(member.score),
+    completed_count: Number(member.completed_count),
+  }))
+}
+
+export async function reputation(db: Db, actor: Actor, id: string) {
+  const [member] = await memberReputations(db, actor.community_id, id)
+  if (!member) fail(404, 'member_not_found')
+  return member
 }

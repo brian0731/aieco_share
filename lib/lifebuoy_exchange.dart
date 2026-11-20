@@ -224,7 +224,22 @@ extension _ExchangePages on _LifebuoyHomeState {
       crossAxisAlignment: WrapCrossAlignment.center,
       spacing: 8,
       children: [
-        if (rating != null) Text('我的評價 ${rating['stars']} 星'),
+        if (rating != null)
+          Text.rich(
+            TextSpan(
+              children: [
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: Icon(
+                    Icons.star_rounded,
+                    size: 17,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                TextSpan(text: ' 我的評分 ${rating['stars']}／5'),
+              ],
+            ),
+          ),
         if (rating == null &&
             completed &&
             expires != null &&
@@ -236,16 +251,7 @@ extension _ExchangePages on _LifebuoyHomeState {
                 : () async {
                     final stars = await showDialog<int>(
                       context: context,
-                      builder: (dialog) => SimpleDialog(
-                        title: const Text('交易評價'),
-                        children: [
-                          for (var i = 1; i <= 5; i++)
-                            SimpleDialogOption(
-                              onPressed: () => Navigator.pop(dialog, i),
-                              child: Text('$i 星'),
-                            ),
-                        ],
-                      ),
+                      builder: (_) => const LifebuoyRatingDialog(),
                     );
                     if (stars != null && mounted) {
                       await run(
@@ -253,7 +259,7 @@ extension _ExchangePages on _LifebuoyHomeState {
                       );
                     }
                   },
-            child: const Text('評價'),
+            child: const Text('評分'),
           ),
         if (dispute != null)
           Text(switch (dispute['outcome']) {
@@ -287,15 +293,18 @@ extension _ExchangePages on _LifebuoyHomeState {
     );
     if (!mounted) return;
     final count = profile['count'];
-    final score = profile['score'] as num?;
     await showDialog<void>(
       context: context,
       builder: (dialog) => AlertDialog(
         title: Text(profile['name'].toString()),
-        content: Text(
-          score == null
-              ? '評價資料不足（$count 位）'
-              : '${score.toStringAsFixed(1)}／5（$count 位）',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            memberRating(profile),
+            const SizedBox(height: 8),
+            Text('$count 位會員評分'),
+          ],
         ),
         actions: [
           TextButton(
@@ -304,6 +313,42 @@ extension _ExchangePages on _LifebuoyHomeState {
           ),
         ],
       ),
+    );
+  }
+
+  Widget memberRating(Json member) {
+    final score = member['score'] as num?;
+    final completed = member['completed_count'];
+    final rating = score == null
+        ? (member.containsKey('score') ? '評分資料不足' : '暫未提供評分')
+        : '${(score * 20).round()}／100';
+    final colors = Theme.of(context).colorScheme;
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 12,
+      runSpacing: 4,
+      children: [
+        Text.rich(
+          TextSpan(
+            children: [
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Icon(
+                  score == null
+                      ? Icons.star_outline_rounded
+                      : Icons.star_rounded,
+                  size: 18,
+                  color: score == null
+                      ? colors.onSurfaceVariant
+                      : colors.primary,
+                ),
+              ),
+              TextSpan(text: ' $rating'),
+            ],
+          ),
+        ),
+        if (completed != null) Text('互助 $completed 次'),
+      ],
     );
   }
 }

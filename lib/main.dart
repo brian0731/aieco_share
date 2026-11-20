@@ -5,11 +5,16 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'lifebuoy_chat.dart';
 import 'lifebuoy_illustration.dart';
+import 'lifebuoy_lightmesh_banner.dart';
+import 'lifebuoy_rating.dart';
 import 'lifebuoy_search.dart';
 
 part 'lifebuoy_districts.dart';
@@ -54,6 +59,27 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   final timeSearch = TextEditingController();
   final exchangeSearch = TextEditingController();
   final random = Random.secure();
+  final localAuth = LocalAuthentication();
+  final biometricStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions.biometric(
+      enforceBiometrics: true,
+      requireBiometricsPerOperation: true,
+      biometricType: AndroidBiometricType.strongBiometricOnly,
+      biometricPromptTitle: '社區救生圈',
+      biometricPromptSubtitle: '請驗證裝置生物認證',
+      biometricPromptNegativeButton: '取消',
+    ),
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.unlocked_this_device,
+      accessControlFlags: [AccessControlFlag.biometryCurrentSet],
+    ),
+  );
+  static final biometricKey =
+      'lifebuoy.session.${Uri.encodeComponent(endpoint)}';
+  static final biometricPreference = '$biometricKey.enabled';
+  bool get biometricPlatform =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool biometricSaved = false;
   Json? home;
   Json? draft;
   String? activeToken;
@@ -71,6 +97,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   @override
   void initState() {
     super.initState();
+    if (biometricPlatform) unawaited(checkBiometricSession());
     unawaited(run(refresh));
   }
 
@@ -120,6 +147,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       final result = jsonDecode(body) as Json;
       if (response.statusCode >= 400) {
         if (response.statusCode == 401 && activeToken != null) {
+          if (biometricSaved) await discardInvalidBiometricSession();
           clearSession();
           if (mounted) unawaited(loadPublicBoard());
         }
@@ -136,6 +164,9 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           'try_again_later' => '嘗試次數過多，請稍後再試',
           'minutes_mismatch' => '分鐘數與約定不符',
           'already_matched' => '此服務已有配對',
+          'rating_exists' => '你已為這筆紀錄評分。',
+          'rating_unavailable' => '這筆紀錄已無法評分。',
+          'trade_disputed' => '這筆紀錄正在處理申訴。',
           _ => '操作未完成（${response.statusCode}）',
         });
       }
@@ -179,11 +210,78 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   }
 
   Future<void> signin() async {
-    final session = await Navigator.of(
-      context,
-    ).push<String>(MaterialPageRoute(builder: (_) => _AccountPage(api: api)));
+    final session = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => _AccountPage(
+          api: passwordAuth,
+          biometricLogin: biometricSaved ? readBiometricSession : null,
+        ),
+      ),
+    );
     if (session == null || !mounted) return;
     await run(() => openSession(session));
+  }
+
+  Future<void> checkBiometricSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getBool(biometricPreference) ?? false;
+      if (mounted) setState(() => biometricSaved = saved);
+    } on PlatformException {
+      // Password login stays available if secure storage is unavailable.
+    }
+  }
+
+  Future<void> forgetBiometricSession() async {
+    if (!biometricPlatform) return;
+    await biometricStorage.delete(key: biometricKey);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(biometricPreference);
+    if (mounted) setState(() => biometricSaved = false);
+  }
+
+  Future<void> discardInvalidBiometricSession() async {
+    try {
+      await forgetBiometricSession();
+    } on PlatformException {
+      if (mounted) setState(() => biometricSaved = false);
+    }
+  }
+
+  Future<void> enableBiometricSession() async {
+    final session = activeToken;
+    if (session == null) return;
+    try {
+      if ((await localAuth.getAvailableBiometrics()).isEmpty) {
+        throw const FormatException('請先在手機設定登記指紋或生物認證');
+      }
+      // Password login with another account must replace the saved session.
+      await biometricStorage.write(key: biometricKey, value: session);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(biometricPreference, true);
+      if (mounted) setState(() => biometricSaved = true);
+    } on PlatformException {
+      throw const FormatException('未能啟用生物認證，請檢查手機設定後重試');
+    } on LocalAuthException {
+      throw const FormatException('未能啟用生物認證，請檢查手機設定後重試');
+    }
+  }
+
+  Future<String?> readBiometricSession() async {
+    try {
+      final session = await biometricStorage.read(key: biometricKey);
+      if (session != null) return session;
+      await discardInvalidBiometricSession();
+    } on PlatformException {
+      throw const FormatException('未能完成生物認證，請重試或使用密碼登入');
+    }
+    throw const FormatException('裝置登入憑證已失效，請使用密碼登入');
+  }
+
+  Future<Json> passwordAuth(String path, [Json? data]) async {
+    final result = await api(path, data);
+    if (biometricSaved) await discardInvalidBiometricSession();
+    return result;
   }
 
   Future<void> openSession(String session) async {
@@ -228,7 +326,11 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       await api('auth/logout', {});
     } finally {
       clearSession();
-      await loadPublicBoard();
+      try {
+        if (biometricSaved) await forgetBiometricSession();
+      } finally {
+        await loadPublicBoard();
+      }
     }
   }
 
@@ -297,15 +399,37 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
             onPressed: busy ? null : () => run(refresh),
             icon: const Icon(Icons.refresh),
           ),
-        IconButton(
-          tooltip: account == null ? '登入或註冊' : '登出',
-          onPressed: busy
-              ? null
-              : account == null
-              ? signin
-              : () => run(signout),
-          icon: Icon(account == null ? Icons.person_outline : Icons.logout),
-        ),
+        if (account == null)
+          IconButton(
+            tooltip: '登入或註冊',
+            onPressed: busy ? null : signin,
+            icon: const Icon(Icons.person_outline),
+          )
+        else
+          PopupMenuButton<String>(
+            tooltip: '帳戶設定',
+            icon: const Icon(Icons.manage_accounts_outlined),
+            enabled: !busy,
+            itemBuilder: (_) => [
+              if (biometricPlatform)
+                PopupMenuItem(
+                  value: biometricSaved ? 'disable' : 'enable',
+                  child: Text(biometricSaved ? '停用指紋／生物認證登入' : '啟用指紋／生物認證登入'),
+                ),
+              if (biometricSaved)
+                const PopupMenuItem(value: 'lock', child: Text('鎖定帳戶')),
+              const PopupMenuItem(value: 'logout', child: Text('登出')),
+            ],
+            onSelected: (action) => run(switch (action) {
+              'enable' => enableBiometricSession,
+              'disable' => forgetBiometricSession,
+              'lock' => () async {
+                clearSession();
+                await loadPublicBoard();
+              },
+              _ => signout,
+            }),
+          ),
       ],
     ),
     body: SafeArea(
@@ -345,7 +469,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           icon: Icon(Icons.volunteer_activism_outlined),
           label: '社區互助',
         ),
-        NavigationDestination(icon: Icon(Icons.schedule), label: '時間帳'),
+        NavigationDestination(icon: Icon(Icons.schedule), label: '時間銀行'),
         NavigationDestination(icon: Icon(Icons.swap_horiz), label: '交換'),
         NavigationDestination(
           icon: Icon(Icons.chat_bubble_outline),

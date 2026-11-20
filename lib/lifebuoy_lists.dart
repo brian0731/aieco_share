@@ -199,6 +199,8 @@ extension _LifebuoyLists on _LifebuoyHomeState {
         ],
       ),
       const SizedBox(height: 12),
+      const LifebuoyLightMeshBanner(),
+      const SizedBox(height: 12),
       if (home case {'fetchedAt': final String date})
         Padding(
           padding: const EdgeInsets.only(bottom: 10),
@@ -379,6 +381,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
     final signedIn = account != null;
     final theme = Theme.of(context);
     final balance = account?['balance'];
+    final remaining = account?['opening_credit_remaining'] as int?;
     const panelText = Color(0xff123c34);
     final query = timeSearch.text;
     final searching = query.trim().isNotEmpty;
@@ -417,7 +420,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
                   Icon(Icons.schedule, color: panelText, size: 20),
                   const SizedBox(width: 8),
                   Text(
-                    signedIn ? '可用時間' : '起始額度',
+                    signedIn ? '可用時間' : '免費起始額度',
                     style: theme.textTheme.titleSmall?.copyWith(
                       color: panelText,
                     ),
@@ -447,12 +450,21 @@ extension _LifebuoyLists on _LifebuoyHomeState {
           _Amount('− 獲得支援', credit: false),
         ],
       ),
+      const SizedBox(height: 8),
+      if (!signedIn)
+        const Text('註冊即有免費 60 分鐘。每次完成協助，從收入扣最多 5 分鐘補時。')
+      else if (remaining != null)
+        Text(
+          remaining == 0
+              ? '起始額度已補滿'
+              : '已補時 ${60 - remaining}／60 分鐘 · 每次協助扣最多 5 分鐘',
+        ),
       const SizedBox(height: 16),
       if (!signedIn) ...[
         OutlinedButton.icon(
           onPressed: busy ? null : signin,
           icon: const Icon(Icons.login),
-          label: const Text('登入查看帳本'),
+          label: const Text('登入查看時間銀行'),
         ),
         const SizedBox(height: 14),
       ] else ...[
@@ -512,6 +524,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
               ListTile(
                 leading: const Icon(Icons.person_outline),
                 title: Text(member['name'].toString()),
+                subtitle: memberRating(member),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: busy ? null : () => run(() => showReputation(member)),
               ),
@@ -522,7 +535,9 @@ extension _LifebuoyLists on _LifebuoyHomeState {
   }
 
   String entryLabel(Json entry) => switch (entry['kind']) {
-    'opening_credit' => '起始額度',
+    'opening_credit' => '免費起始額度',
+    'opening_credit_repayment' => '補時 · 補回起始額度',
+    'opening_credit_repayment_reversal' => '退回補時',
     'reversal' => '帳目更正',
     _ => (entry['delta'] as int) > 0 ? '服務收入' : '服務支出',
   };

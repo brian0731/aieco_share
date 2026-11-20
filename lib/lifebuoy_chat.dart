@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'lifebuoy_chat_connection.dart';
 import 'lifebuoy_illustration.dart';
 import 'lifebuoy_search.dart';
 import 'lightmesh.dart' show MeshChatService, MeshNetworkMode;
@@ -15,11 +16,30 @@ class LifebuoyChat extends StatefulWidget {
 
 class _LifebuoyChatState extends State<LifebuoyChat> {
   static const relay = String.fromEnvironment('LIFEBUOY_RELAY_URL');
-  final mesh = MeshChatService(onlineRelayUrl: relay);
+  static const connectionCode = String.fromEnvironment(
+    'LIFEBUOY_NETWORK_CONNECTION_CODE',
+  );
+  static const directory = String.fromEnvironment(
+    'AIECO_NETWORK_DIRECTORY_URL',
+    defaultValue: 'https://www.aieco.hk/api/lightmesh',
+  );
+  final mesh = MeshChatService(
+    onlineRelayUrl: relay,
+    networkConnectionCode:
+        connectionCode == LifebuoyChatConnection.lightMeshCode
+        ? ''
+        : connectionCode,
+    networkDirectoryUrl: directory,
+    bridgePublicChatOnly: true,
+  );
   final composer = TextEditingController();
   final search = TextEditingController();
-  bool started = false;
   bool busy = false;
+
+  Future<void> startChat(MeshNetworkMode mode) => operate(() async {
+    await mesh.setNetworkMode(mode);
+    await mesh.start();
+  });
 
   Future<void> operate(Future<void> Function() task) async {
     setState(() => busy = true);
@@ -44,7 +64,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
     builder: (context, _) => SafeArea(
       child: Column(
         children: [
-          if (!started)
+          if (!mesh.isRunning)
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: LifebuoyIllustration(
@@ -58,27 +78,31 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
               OutlinedButton(
                 onPressed: busy
                     ? null
-                    : () => operate(() async {
-                        await mesh.setNetworkMode(MeshNetworkMode.offline);
-                        await mesh.start();
-                        if (mounted) setState(() => started = true);
-                      }),
+                    : () => startChat(MeshNetworkMode.offline),
                 child: const Text('加入 LAN 聊天'),
               ),
               OutlinedButton(
                 onPressed: busy || relay.isEmpty
                     ? null
-                    : () => operate(() async {
-                        await mesh.setNetworkMode(MeshNetworkMode.online);
-                        await mesh.start();
-                        if (mounted) setState(() => started = true);
-                      }),
+                    : () => startChat(MeshNetworkMode.online),
                 child: const Text('加入光網公開房間'),
+              ),
+              OutlinedButton.icon(
+                onPressed: busy
+                    ? null
+                    : () => showDialog<void>(
+                        context: context,
+                        builder: (_) => LifebuoyChatConnection(mesh: mesh),
+                      ),
+                icon: const Icon(Icons.link),
+                label: const Text('連接另一個光網 APP'),
               ),
             ],
           ),
           if (relay.isEmpty) const Text('尚未設定光網公開房間'),
-          if (started) Text(mesh.status),
+          if (mesh.isRunning) Text(mesh.status),
+          if (mesh.networkBridge.active)
+            Text(mesh.networkBridge.connected ? '光網聊天室已互通' : '光網互連中…'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: LifebuoySearchField(
@@ -88,7 +112,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
             ),
           ),
           Expanded(child: messageList()),
-          if (started)
+          if (mesh.isRunning)
             Padding(
               padding: const EdgeInsets.all(12),
               child: Row(

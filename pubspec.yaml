@@ -40,6 +40,9 @@ dependencies:
   flutter_map: ^8.3.1
   latlong2: ^0.10.1
   font_awesome_flutter: ^11.0.0
+  url_launcher: ^6.3.3
+  flutter_secure_storage: ^11.2.0
+  local_auth: ^3.0.2
 
 dev_dependencies:
   flutter_test:
@@ -67,3 +70,5 @@ flutter:
     - assets/images/lifebuoy/time.webp
     - assets/images/lifebuoy/exchange.webp
     - assets/images/lifebuoy/chat.webp
+    - assets/images/lifebuoy/lightmesh-download.webp
+    - assets/images/lifebuoy/login.webp

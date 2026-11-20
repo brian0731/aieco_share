@@ -1,7 +1,7 @@
 import { authenticate, bearerDigest, boundedText, database, fail, jsonInput, rows, transaction, uuid, type Db } from '../../utils/database'
 import { changeService, matchHelp, publishHelp } from '../../utils/time-bank'
 import { changeExchange, proposeExchange, publishItem } from '../../utils/exchange'
-import { changeRating, reputation } from '../../utils/ratings'
+import { changeRating, memberReputations, reputation } from '../../utils/ratings'
 import { loginMember, loginRateLimit, registerMember } from '../../utils/member-auth'
 import { hongKongDistrictIds } from '../../utils/districts'
 import { adminDashboard } from '../../utils/admin-dashboard'
@@ -53,22 +53,34 @@ export default defineEventHandler(async (event) => {
   }
   if (event.method === 'GET' && !id && resource === 'home') {
     const [[account], board, services, entries, members, exchanges, ratings, disputes] = await Promise.all([
-      rows(db, 'SELECT community_id,id,name,role,balance FROM members WHERE community_id=? AND id=?', [community, actor.id]),
+      rows(db, `SELECT m.community_id,m.id,m.name,m.role,m.balance,
+        c.minutes - c.repaid_minutes AS opening_credit_remaining
+        FROM members m LEFT JOIN time_opening_credits c
+          ON (c.community_id,c.member_id)=(m.community_id,m.id) AND c.applied_at IS NOT NULL
+        WHERE m.community_id=? AND m.id=?`, [community, actor.id]),
       publicBoard(db, [community]),
       rows(db, `SELECT s.*,p.title FROM services s JOIN help_posts p
         ON (p.community_id,p.id)=(s.community_id,s.post_id)
         WHERE s.community_id=? AND (s.payer_id=? OR s.provider_id=?)
         ORDER BY p.created_at DESC,s.id DESC LIMIT 100`, [community, actor.id, actor.id]),
-      rows<{ delta: number | string }>(db, `SELECT e.service_id,e.kind,e.delta,j.created_at,p.title
+      rows<{ delta: number | string, entry_order: number }>(db, `SELECT e.service_id,e.kind,e.delta,j.created_at,p.title,0 AS entry_order
         FROM time_entries e JOIN time_journals j USING(community_id,service_id,kind)
         JOIN services s ON (s.community_id,s.id)=(e.community_id,e.service_id)
         JOIN help_posts p ON (p.community_id,p.id)=(s.community_id,s.post_id)
         WHERE e.community_id=? AND e.member_id=?
         UNION ALL
-        SELECT NULL,'opening_credit',minutes,applied_at,NULL FROM time_opening_credits
+        SELECT e.service_id,IF(e.kind='settlement','opening_credit_repayment','opening_credit_repayment_reversal'),
+          CAST(j.opening_credit_repayment AS SIGNED) * IF(e.kind='settlement',-1,1),j.created_at,p.title,1
+        FROM time_entries e JOIN time_journals j USING(community_id,service_id,kind)
+        JOIN services s ON (s.community_id,s.id)=(e.community_id,e.service_id) AND s.provider_id=e.member_id
+        JOIN help_posts p ON (p.community_id,p.id)=(s.community_id,s.post_id)
+        WHERE e.community_id=? AND e.member_id=? AND j.opening_credit_repayment>0
+        UNION ALL
+        SELECT NULL,'opening_credit',minutes,applied_at,NULL,0 FROM time_opening_credits
         WHERE community_id=? AND member_id=? AND applied_at IS NOT NULL
-        ORDER BY created_at DESC,service_id DESC,kind DESC LIMIT 100`, [community, actor.id, community, actor.id]),
-      rows(db, 'SELECT id,name FROM members WHERE community_id=? ORDER BY name,id LIMIT 100', [community]),
+        ORDER BY created_at DESC,service_id DESC,entry_order,kind DESC LIMIT 100`,
+        [community, actor.id, community, actor.id, community, actor.id]),
+      memberReputations(db, community),
       rows(db, `SELECT e.*,e.expires_at<=UTC_TIMESTAMP(6) AS expired,
         o.title AS offered_title,w.title AS wanted_title FROM exchanges e
         JOIN items o ON (o.community_id,o.id)=(e.community_id,e.offered_id)
@@ -84,7 +96,9 @@ export default defineEventHandler(async (event) => {
     ])
     return {
       ...board, account, services,
-      entries: entries.map(entry => ({ ...entry, delta: Number(entry.delta) })),
+      entries: entries.map(({ entry_order, ...entry }) => ({
+        ...entry, delta: Number(entry.delta),
+      })),
       members, exchanges, ratings, disputes,
     }
   }

@@ -74,22 +74,47 @@ async function postJournal(db: PoolConnection, actor: Actor, service: Service, k
     ? [service.payer_id, service.provider_id]
     : [service.provider_id, service.payer_id]
 
+  let debitBalance = 0
   for (const id of [debit, credit].sort()) {
     const [account] = await rows<{ balance: number }>(db,
       'SELECT balance FROM members WHERE community_id=? AND id=? FOR UPDATE', [community, id])
-    if (!account || (id === debit && account.balance < service.minutes)) fail(409, 'insufficient_balance')
+    if (!account) fail(409, 'insufficient_balance')
+    if (id === debit) debitBalance = account.balance
   }
+
+  // Member locks serialize changes to the provider's opening credit across services.
+  let repayment = 0
+  if (kind === 'settlement') {
+    const [opening] = await rows<{ minutes: number, repaid_minutes: number }>(db,
+      'SELECT minutes,repaid_minutes FROM time_opening_credits WHERE community_id=? AND member_id=? AND applied_at IS NOT NULL FOR UPDATE',
+      [community, service.provider_id])
+    if (opening) repayment = Math.min(5, service.minutes, opening.minutes - opening.repaid_minutes)
+  } else {
+    const [settlement] = await rows<{ opening_credit_repayment: number }>(db,
+      "SELECT opening_credit_repayment FROM time_journals WHERE community_id=? AND service_id=? AND kind='settlement' FOR UPDATE",
+      [community, service.id])
+    repayment = settlement?.opening_credit_repayment ?? 0
+  }
+  const repaymentDelta = kind === 'settlement' ? -repayment : repayment
+  if (debitBalance < service.minutes - (kind === 'reversal' ? repayment : 0)) {
+    fail(409, 'insufficient_balance')
+  }
+
   await db.execute(
-    'INSERT INTO time_journals (community_id,service_id,kind,actor_id,reason) VALUES (?,?,?,?,?)',
-    [community, service.id, kind, actor.id, reason ?? null],
+    'INSERT INTO time_journals (community_id,service_id,kind,actor_id,reason,opening_credit_repayment) VALUES (?,?,?,?,?,?)',
+    [community, service.id, kind, actor.id, reason ?? null, repayment],
   )
-  for (const [owner, delta] of [[debit, -service.minutes], [credit, service.minutes]]) {
+  for (const [owner, delta] of [[debit, -service.minutes], [credit, service.minutes]] as const) {
     await db.execute(
       'INSERT INTO time_entries (community_id,service_id,kind,member_id,delta) VALUES (?,?,?,?,?)',
       [community, service.id, kind, owner, delta],
     )
     await db.execute('UPDATE members SET balance=balance+? WHERE community_id=? AND id=?',
-      [delta, community, owner])
+      [delta + (owner === service.provider_id ? repaymentDelta : 0), community, owner])
+  }
+  if (repayment) {
+    await db.execute('UPDATE time_opening_credits SET repaid_minutes=repaid_minutes-? WHERE community_id=? AND member_id=?',
+      [repaymentDelta, community, service.provider_id])
   }
 }
 

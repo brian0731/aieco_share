@@ -1,9 +1,10 @@
 part of 'main.dart';
 
 class _AccountPage extends StatefulWidget {
-  const _AccountPage({required this.api});
+  const _AccountPage({required this.api, this.biometricLogin});
 
   final Future<Json> Function(String path, [Json? data]) api;
+  final Future<String?> Function()? biometricLogin;
 
   @override
   State<_AccountPage> createState() => _AccountPageState();
@@ -13,6 +14,7 @@ class _AccountPageState extends State<_AccountPage> {
   final form = GlobalKey<FormState>();
   final username = TextEditingController();
   final password = TextEditingController();
+  final confirmation = TextEditingController();
   final name = TextEditingController();
   bool registering = false;
   bool obscurePassword = true;
@@ -24,8 +26,24 @@ class _AccountPageState extends State<_AccountPage> {
   void dispose() {
     username.dispose();
     password.dispose();
+    confirmation.dispose();
     name.dispose();
     super.dispose();
+  }
+
+  Future<void> unlock() async {
+    setState(() {
+      busy = true;
+      error = null;
+    });
+    try {
+      final token = await widget.biometricLogin!();
+      if (mounted && token != null) Navigator.pop(context, token);
+    } on FormatException catch (problem) {
+      if (mounted) setState(() => error = problem.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   Future<void> submit() async {
@@ -71,8 +89,17 @@ class _AccountPageState extends State<_AccountPage> {
                 key: form,
                 child: ListView(
                   shrinkWrap: true,
+                  scrollCacheExtent: const ScrollCacheExtent.pixels(600),
                   padding: const EdgeInsets.all(24),
                   children: [
+                    AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: LifebuoyIllustration(
+                        scene: 'login',
+                        color: Theme.of(context).colorScheme.surfaceContainer,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
                     if (registering) ...[
                       TextFormField(
                         controller: name,
@@ -134,8 +161,10 @@ class _AccountPageState extends State<_AccountPage> {
                             ? AutofillHints.newPassword
                             : AutofillHints.password,
                       ],
-                      textInputAction: TextInputAction.done,
-                      onFieldSubmitted: (_) => submit(),
+                      textInputAction: registering
+                          ? TextInputAction.next
+                          : TextInputAction.done,
+                      onFieldSubmitted: registering ? null : (_) => submit(),
                       decoration: InputDecoration(
                         labelText: '密碼',
                         suffixIcon: IconButton(
@@ -161,6 +190,23 @@ class _AccountPageState extends State<_AccountPage> {
                         return null;
                       },
                     ),
+                    if (registering) ...[
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: confirmation,
+                        enabled: !busy,
+                        obscureText: obscurePassword,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        textInputAction: TextInputAction.done,
+                        onFieldSubmitted: (_) => submit(),
+                        decoration: const InputDecoration(labelText: '確認密碼'),
+                        validator: (value) {
+                          if (value == null || value.isEmpty) return '請再次輸入密碼';
+                          return value == password.text ? null : '兩次輸入的密碼不一致';
+                        },
+                      ),
+                    ],
                     if (error case final String message)
                       Padding(
                         padding: const EdgeInsets.only(top: 12),
@@ -176,6 +222,12 @@ class _AccountPageState extends State<_AccountPage> {
                       onPressed: busy ? null : submit,
                       child: Text(action),
                     ),
+                    if (!registering && widget.biometricLogin != null)
+                      OutlinedButton.icon(
+                        onPressed: busy ? null : unlock,
+                        icon: const Icon(Icons.fingerprint),
+                        label: const Text('指紋／生物認證登入'),
+                      ),
                     if (busy) const LinearProgressIndicator(),
                     TextButton(
                       onPressed: busy
@@ -183,6 +235,7 @@ class _AccountPageState extends State<_AccountPage> {
                           : () {
                               form.currentState?.reset();
                               password.clear();
+                              confirmation.clear();
                               setState(() {
                                 registering = !registering;
                                 districtId = null;

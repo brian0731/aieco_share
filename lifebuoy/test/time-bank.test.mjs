@@ -50,6 +50,8 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     ['payer', community, 'member', 60], ['provider', community, 'member', 0],
     ['new', community, 'member', 0], ['admin', community, 'admin', 0],
     ['helper', community, 'member', 0],
+    ['repayment-payer', community, 'member', 60],
+    ['repayment-provider', community, 'member', 60],
     ['outsider', other, 'member', 60],
   ]) {
     const token = randomBytes(32).toString('base64url')
@@ -118,6 +120,50 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     assert.deepEqual(await entries(id), [-30, 30])
   })
 
+  await t.test('opening credit repayment is capped, itemized and refunded on reversal', async () => {
+    const payer = 'repayment-payer'
+    const provider = 'repayment-provider'
+    await db.execute('INSERT INTO time_opening_credits (community_id,member_id,minutes,applied_at) VALUES (?,?,60,UTC_TIMESTAMP(6))', [community, provider])
+    async function settle(amount) {
+      const id = randomUUID()
+      const path = `services/${id}`
+      const agreed = { minutes: amount }
+      await request(payer, 'posts', { id, kind: 'request', title: '補時驗收', area: '驗收區', ...agreed })
+      await request(provider, `posts/${id}/match`, {})
+      await request(payer, path + '/agree', agreed)
+      await request(provider, path + '/agree', agreed)
+      await request(payer, path + '/confirm', agreed)
+      await request(provider, path + '/confirm', agreed)
+      return id
+    }
+
+    const short = await settle(3)
+    const regular = await settle(10)
+    const home = await request(provider, 'home')
+    assert.equal(home.account.balance, 65)
+    assert.equal(home.account.opening_credit_remaining, 52)
+    assert.deepEqual(home.entries.filter(entry => entry.service_id === short).map(entry => entry.delta), [3, -3])
+    assert.deepEqual(home.entries.filter(entry => entry.service_id === regular).map(entry => [entry.kind, entry.delta]),
+      [['settlement', 10], ['opening_credit_repayment', -5]])
+    assert.ok(!(await request(payer, 'home')).entries.some(entry => entry.kind === 'opening_credit_repayment'))
+
+    // Represent a member whose earlier services have already repaid most of the grant.
+    await db.execute('UPDATE time_opening_credits SET repaid_minutes=58 WHERE community_id=? AND member_id=?', [community, provider])
+    const capped = await settle(10)
+    const afterCap = await settle(10)
+    const full = await request(provider, 'home')
+    assert.equal(full.account.opening_credit_remaining, 0)
+    assert.deepEqual(full.entries.filter(entry => entry.service_id === capped).map(entry => entry.delta), [10, -2])
+    assert.deepEqual(full.entries.filter(entry => entry.service_id === afterCap).map(entry => entry.delta), [10])
+
+    const reversal = { reason: '測試補時退回' }
+    await request('admin', `services/${capped}/reverse`, reversal)
+    await request('admin', `services/${capped}/reverse`, reversal)
+    const reversed = await request(provider, 'home')
+    assert.equal(reversed.account.opening_credit_remaining, 2)
+    assert.equal(reversed.entries.find(entry => entry.service_id === capped && entry.kind === 'opening_credit_repayment_reversal').delta, 2)
+  })
+
   await t.test('insufficient balance does not partially confirm; free help needs no balance', async () => {
     const id = await pending()
     await request('payer', `services/${id}/confirm`, agreement)
@@ -130,7 +176,7 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
 
   await t.test('failure on credit entry rolls back debit, confirmation and journal', async () => {
     const [[{ id: prior }]] = await db.execute(
-      "SELECT id FROM services WHERE community_id=? AND state='settled' LIMIT 1", [community])
+      "SELECT id FROM services WHERE community_id=? AND payer_id='payer' AND provider_id='provider' AND state='settled' LIMIT 1", [community])
     const reverse = `services/${prior}/reverse`
     await request('admin', reverse, { reason: '驗收更正' })
     await request('admin', reverse, { reason: '驗收更正' })
@@ -160,6 +206,7 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     assert.deepEqual(await entries(id), [-30, 30])
   })
 
+  let completedExchange
   await t.test('competing reservations, cancellation, and participant-only handoff', async () => {
     async function item(actor, title) {
       const id = randomUUID()
@@ -189,9 +236,10 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     await request('helper', `exchanges/${loser}/handoff`, {}, 403)
     assert.equal((await request('payer', `exchanges/${loser}/handoff`, {})).state, 'reserved')
     assert.equal((await request(partner, `exchanges/${loser}/handoff`, {})).state, 'completed')
+    completedExchange = { id: loser, partner }
   })
 
-  await t.test('blind ratings, unique retry, three reviewers, and dispute recalculation', async () => {
+  await t.test('ratings appear immediately, count each reviewer once, and respect disputes', async () => {
     const submissions = []
     for (const [reviewer, stars] of [['provider',5], ['new',4], ['helper',3]]) {
       const id = randomUUID()
@@ -208,8 +256,12 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
       if (reviewer !== 'helper') await request('helper', rate, { stars }, 403)
       await Promise.all([request(reviewer, rate, { stars }), request(reviewer, rate, { stars })])
       await request(reviewer, rate, { stars: 1 }, 409)
-      assert.equal((await request('payer', 'home')).ratings.some(r => r.trade_id === id), false)
-      assert.equal((await request('payer', 'members/payer')).count, submissions.length)
+      const home = await request('payer', 'home')
+      assert.equal(home.ratings.some(r => r.trade_id === id), false)
+      const member = home.members.find(row => row.id === 'payer')
+      assert.equal(member.count, submissions.length + 1)
+      assert.equal(member.score, (5 + stars) / 2)
+      assert.deepEqual(await request('payer', 'members/payer'), member)
       if (reviewer === 'helper') {
         await db.execute('UPDATE services SET completed_at=UTC_TIMESTAMP(6)-INTERVAL 7 DAY WHERE community_id=? AND id=?', [community,id])
         await request('payer', rate, { stars: 5 }, 409)
@@ -218,10 +270,14 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
       }
       submissions.push(id)
     }
-    assert.deepEqual(await request('payer', 'members/payer'), { id: 'payer', name: 'payer', count: 3, score: 4 })
+    const ratedMember = { id: 'payer', name: 'payer', count: 3, score: 4, completed_count: 6 }
+    assert.deepEqual(await request('payer', 'members/payer'), ratedMember)
+    assert.deepEqual((await request('payer', 'home')).members.find(row => row.id === 'payer'), ratedMember)
+    assert.deepEqual((await request('outsider', 'home')).members,
+      [{ id: 'outsider', name: 'outsider', count: 0, score: null, completed_count: 0 }])
     await request('outsider', 'members/payer', null, 404)
     await request('payer', `services/${submissions[0]}/dispute`, { reason: '驗收申訴' })
-    assert.equal((await request('payer', 'members/payer')).score, null)
+    assert.equal((await request('payer', 'members/payer')).score, 3.5)
     await request('payer', 'admin', null, 403)
     const dashboard = await request('admin', 'admin')
     assert.equal(dashboard.community, '驗收社區')
@@ -239,6 +295,15 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     assert.ok(dashboard.audit.some(row => row.action === 'service_dispute_open' && row.target_title === '驗收服務'))
     await request('admin', `services/${submissions[0]}/resolve`, { outcome: 'restore', reason: '驗收恢復' })
     assert.equal((await request('payer', 'members/payer')).score, 4)
+    // Make the completed exchange the most recent trade with this reviewer.
+    await db.execute('UPDATE exchanges SET completed_at=UTC_TIMESTAMP(6) WHERE community_id=? AND id=?',
+      [community, completedExchange.id])
+    const rateExchange = `exchanges/${completedExchange.id}/rate`
+    await request(completedExchange.partner, rateExchange, { stars: 1 })
+    const expectedScore = completedExchange.partner === 'provider' ? 2.7 : 3
+    assert.deepEqual((await request('payer', 'home')).members.find(row => row.id === 'payer'),
+      { ...ratedMember, score: expectedScore })
+    await request('payer', rateExchange, { stars: 5 })
   })
 
   await t.test('self registration, password login, guest board and session revocation', async () => {
@@ -299,9 +364,11 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     const payerHome = await request('login', 'home')
     const helperHome = await request('signup-helper', 'home')
     assert.equal(payerHome.account.balance, 30)
-    assert.equal(helperHome.account.balance, 90)
+    assert.equal(helperHome.account.balance, 85)
+    assert.equal(helperHome.account.opening_credit_remaining, 55)
     assert.equal(payerHome.entries.find(entry => entry.service_id === paid).delta, -30)
     assert.equal(helperHome.entries.find(entry => entry.service_id === paid).delta, 30)
+    assert.equal(helperHome.entries.find(entry => entry.service_id === paid && entry.kind === 'opening_credit_repayment').delta, -5)
     await request('login', 'posts', { id: postId, kind: 'free', title: '訪客看板驗收', area: '驗收區' })
     const board = await request('guest', 'board')
     assert.deepEqual(Object.keys(board).sort(), ['fetchedAt', 'items', 'posts'])

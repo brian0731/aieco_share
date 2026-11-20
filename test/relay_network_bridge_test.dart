@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:aieco_share/lifebuoy_chat_connection.dart';
 import 'package:aieco_share/lightmesh.dart';
 import 'package:aieco_share/relay_network_bridge.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,99 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../tool/network_directory_server.dart';
 
 void main() {
+  testWidgets('Lifebuoy shows its own code and pre-fills the LightMesh code', (
+    tester,
+  ) async {
+    final mesh = MeshChatService(
+      onlineRelayUrl: 'wss://lifebuoy.example.test/ws/light',
+      networkConnectionCode: '704826',
+      bridgePublicChatOnly: true,
+    );
+    addTearDown(mesh.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: LifebuoyChatConnection(mesh: mesh)),
+    );
+    expect(find.text('704826'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '582193',
+    );
+    await tester.enterText(find.byType(TextField), '704826');
+    await tester.tap(find.text('接通另一個 APP'));
+    await tester.pump();
+    expect(find.text('這是本網絡的連接碼，請輸入另一個 APP 的碼。'), findsOneWidget);
+    expect(mesh.isRunning, isFalse);
+  });
+
+  test(
+    'Lifebuoy connects to 582193 and bridges only the public room',
+    () => HttpOverrides.runWithHttpOverrides(() async {
+      SharedPreferences.setMockInitialValues({});
+      final lightMesh = await _Relay.start();
+      final lifebuoy = await _Relay.start();
+      final directory = NetworkDirectoryServer({
+        '582193': lightMesh.url,
+        '704826': lifebuoy.url,
+      });
+      await directory.start(port: 0);
+      final remote = MeshChatService(onlineRelayUrl: lightMesh.url);
+      final local = MeshChatService(
+        onlineRelayUrl: lifebuoy.url,
+        networkConnectionCode: '704826',
+        networkDirectoryUrl: 'http://127.0.0.1:${directory.port}',
+        bridgePublicChatOnly: true,
+      );
+      addTearDown(() async {
+        await local.stop();
+        await remote.stop();
+        local.dispose();
+        remote.dispose();
+        await lifebuoy.close();
+        await lightMesh.close();
+        await directory.close();
+      });
+      await remote.start();
+      await local.connectOtherNetwork('582193');
+      expect(local.networkBridge.connected, isTrue);
+
+      expect(await remote.sendMessage('From LightMesh'), isTrue);
+      expect(await local.sendMessage('From Lifebuoy'), isTrue);
+      await _until(
+        () => local.activeRoomMessages.any((m) => m.text == 'From LightMesh'),
+      );
+      await _until(
+        () => remote.activeRoomMessages.any((m) => m.text == 'From Lifebuoy'),
+      );
+      expect(
+        local.activeRoomMessages.where((m) => m.text == 'From LightMesh'),
+        hasLength(1),
+      );
+      expect(
+        remote.activeRoomMessages.where((m) => m.text == 'From Lifebuoy'),
+        hasLength(1),
+      );
+
+      expect(remote.createRoom('Another room'), isTrue);
+      expect(await remote.sendMessage('Only the other room'), isTrue);
+      remote.setActiveRoom('room:main');
+      expect(await remote.sendMessage('Back in the public room'), isTrue);
+      await _until(
+        () => local.activeRoomMessages.any(
+          (m) => m.text == 'Back in the public room',
+        ),
+      );
+      expect(local.rooms.any((r) => r.name == 'Another room'), isFalse);
+      expect(
+        local.messages.any((m) => m.text == 'Only the other room'),
+        isFalse,
+      );
+
+      local.disconnectOtherNetwork();
+      expect(local.networkBridge.active, isFalse);
+      expect(local.onlineConnected, isTrue);
+    }, _RealHttpOverrides()),
+  );
+
   test(
     'connection codes work both ways and reject invalid or same networks',
     () async {

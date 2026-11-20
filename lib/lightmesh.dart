@@ -13867,6 +13867,7 @@ class MeshChatService extends ChangeNotifier {
     String onlineRelayUrl = _onlineRelayUrl,
     String networkDirectoryUrl = _networkDirectoryUrl,
     this.networkConnectionCode = _networkConnectionCode,
+    bool bridgePublicChatOnly = false,
   }) : _connectLanSocket = connectLanSocket ?? _defaultConnectLanSocket,
        _pairing = NetworkPairingClient(networkDirectoryUrl),
        _relayUrl = onlineRelayUrl,
@@ -13874,12 +13875,18 @@ class MeshChatService extends ChangeNotifier {
        _nodeId = _newId('node'),
        _displayName = _newDisplayName(),
        _userName = _defaultUserName {
-    if (!NetworkPairingClient.codePattern.hasMatch(networkConnectionCode)) {
+    if (networkConnectionCode.isNotEmpty &&
+        !NetworkPairingClient.codePattern.hasMatch(networkConnectionCode)) {
       throw const FormatException('請輸入 6 位數字連接碼。');
     }
     _seenMessageIds.add(_nodeId);
     networkBridge = RelayNetworkBridge(
       localRelayUrl: _relayUrl,
+      forwardPacket: bridgePublicChatOnly
+          ? (packet) =>
+              packet['kind'] == _chatKind &&
+              (packet['roomId'] ?? _defaultRoomId) == _defaultRoomId
+          : null,
       onConnected: () {
         _announcePresence();
         unawaited(_syncRecentStateOnline());
