@@ -1,0 +1,18647 @@
+// LightNetwork: Connect
+// LightChannel: Communicate
+// LightRadar: Locate
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:flutter/material.dart' hide Text, Tooltip;
+import 'package:flutter/material.dart' as material show Text, Tooltip;
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter/services.dart';
+import 'package:latlong2/latlong.dart' show LatLng;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+import 'ui_translations.g.dart';
+import 'relay_network_bridge.dart';
+import 'network_pairing_client.dart';
+
+const String _aiecoWebUrl = 'https://www.aieco.hk';
+const String _communityLifebuoyUrl = 'https://www.aieco.hk/community/lifebuoy';
+const String _communityWallUrl = 'https://www.aieco.hk/community/wall';
+const String _communityShareUrl = 'https://www.aieco.hk/community/share';
+const String whatsAppSupportUrl =
+    'https://wa.me/+85262112160?text=%E6%83%B3%E6%9F%A5%E8%A9%A2%E5%85%89%E7%B6%B2%E6%94%AF%E6%8F%B4';
+const String lineSupportUrl = 'https://line.me/ti/p/7elEusTH6q';
+const String qqChannelUrl = 'https://pd.qq.com/s/fasn44zz5?b=5';
+const String _communityNewsHost = 'www.aieco.hk';
+const String _communityNewsApiPath = '/api/blogs';
+const String _communityNewsCategory = 'community-info';
+const int _communityNewsLimit = 50;
+const int _communityNewsPageSize = 5;
+const String _launchImageAsset = 'assets/images/launch_fullscreen.png';
+const String _googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+const String _googleMapsMapId = String.fromEnvironment('GOOGLE_MAPS_MAP_ID');
+const String _onlineRelayUrl = String.fromEnvironment('AIECO_ONLINE_RELAY_URL');
+const String _networkConnectionCode = String.fromEnvironment(
+  'AIECO_NETWORK_CONNECTION_CODE',
+  defaultValue: '582193',
+);
+const String _networkDirectoryUrl = String.fromEnvironment(
+  'AIECO_NETWORK_DIRECTORY_URL',
+  defaultValue: 'https://www.aieco.hk/api/lightmesh',
+);
+const Duration _launchScreenDuration = Duration(milliseconds: 900);
+const double _nearbyRadarMeters = 5;
+const String _nearbyRadarLabel = '5 米內';
+const Duration _radarActiveTrackingInterval = Duration(seconds: 45);
+const Duration _radarPassiveTrackingInterval = Duration(minutes: 2);
+const Duration _radarBackgroundTrackingInterval = Duration(minutes: 5);
+const Duration _radarActiveLocationCacheMaxAge = Duration(minutes: 2);
+const Duration _radarPassiveLocationCacheMaxAge = Duration(minutes: 5);
+const Duration _radarBackgroundLocationCacheMaxAge = Duration(minutes: 10);
+const double _radarLocationUpdateThresholdMeters = 8;
+const double _radarAccuracyUpdateThresholdMeters = 20;
+const Duration _wirelessStatusInterval = Duration(seconds: 6);
+const Duration _wifiGroupInterval = Duration(minutes: 5);
+const double _hongKongCenterLatitude = 22.3193;
+const double _hongKongCenterLongitude = 114.1694;
+const double _wongTaiSinMeetupLatitude = 22.34218;
+const double _wongTaiSinMeetupLongitude = 114.19355;
+const String _wongTaiSinMeetupId = 'wong-tai-sin-temple-meetup';
+const String _wongTaiSinMeetupName = '集合點';
+const String _hongKongOfflineTileTemplate =
+    'assets/map_tiles/hong_kong/{z}/{x}/{y}.png';
+const String _hongKongOfflineTilePrefix = 'assets/map_tiles/hong_kong/';
+const int _hongKongOfflineMinZoom = 10;
+const int _hongKongOfflineMaxNativeZoom = 16;
+const int _hongKongOfflineMaxZoom = 18;
+const int _kowloonOfflineDetailZoom = 17;
+const double _kowloonDetailWest = 114.12;
+const double _kowloonDetailEast = 114.27;
+const double _kowloonDetailNorth = 22.39;
+const double _kowloonDetailSouth = 22.29;
+const int _wongTaiSinOfflineDetailZoom = 18;
+const double _wongTaiSinDetailWest = 114.18;
+const double _wongTaiSinDetailEast = 114.24;
+const double _wongTaiSinDetailNorth = 22.36;
+const double _wongTaiSinDetailSouth = 22.32;
+const String _moderationContactEmail = 'info@aieco.hk';
+const String _moderationResponseWindow = '24 小時';
+
+class _ExternalUrlLauncher {
+  const _ExternalUrlLauncher._();
+
+  static const MethodChannel _channel = MethodChannel(
+    'hk.aieco.propagation_light/wifi_mesh',
+  );
+
+  static Future<bool> open(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || !_isExternalHttpUrl(uri)) {
+      return false;
+    }
+
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return false;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<Object?>(
+        'openExternalUrl',
+        <String, Object?>{'url': uri.toString()},
+      );
+      return result == true;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+}
+
+class _BackgroundMeshController {
+  static const MethodChannel _channel = MethodChannel(
+    'hk.aieco.propagation_light/wifi_mesh',
+  );
+  static const int _previewMaxLength = 96;
+  static const Duration _failedServiceRetryDelay = Duration(minutes: 1);
+
+  bool _serviceEnabled = false;
+  bool _notificationPermissionRequested = false;
+  DateTime? _lastServiceErrorAt;
+
+  Future<void> requestNotificationPermission() async {
+    if (_notificationPermissionRequested ||
+        (!Platform.isAndroid && !Platform.isIOS)) {
+      return;
+    }
+
+    _notificationPermissionRequested = true;
+    try {
+      await _channel.invokeMethod<Object?>('requestNotificationPermission');
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  Future<void> syncService({required bool enabled}) async {
+    if (!Platform.isAndroid || _serviceEnabled == enabled) {
+      return;
+    }
+
+    final lastErrorAt = _lastServiceErrorAt;
+    if (enabled &&
+        lastErrorAt != null &&
+        DateTime.now().difference(lastErrorAt) < _failedServiceRetryDelay) {
+      return;
+    }
+
+    try {
+      await _channel.invokeMethod<Object?>(
+        enabled ? 'startBackgroundMeshService' : 'stopBackgroundMeshService',
+      );
+      _serviceEnabled = enabled;
+      _lastServiceErrorAt = null;
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      if (enabled) {
+        _lastServiceErrorAt = DateTime.now();
+      } else {
+        _serviceEnabled = false;
+      }
+    }
+  }
+
+  Future<void> showChatNotification(MeshMessage message) async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return;
+    }
+
+    try {
+      await _channel
+          .invokeMethod<Object?>('showChatNotification', <String, Object?>{
+            'title': message.roomName,
+            'senderName': message.senderName,
+            'body': _preview(message.text),
+          });
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  Future<void> clearChatNotifications() async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return;
+    }
+
+    try {
+      await _channel.invokeMethod<Object?>('clearChatNotifications');
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  static String _preview(String value) {
+    final clean = value.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (clean.length <= _previewMaxLength) {
+      return clean;
+    }
+    return '${clean.substring(0, _previewMaxLength)}...';
+  }
+}
+
+bool _isExternalHttpUrl(Uri uri) {
+  final scheme = uri.scheme.toLowerCase();
+  return scheme == 'https' || scheme == 'http';
+}
+
+Future<void> _openExternalUrl(BuildContext context, String url) async {
+  final opened = await _ExternalUrlLauncher.open(url);
+  if (!context.mounted || opened) {
+    return;
+  }
+
+  await Clipboard.setData(ClipboardData(text: url));
+  if (!context.mounted) {
+    return;
+  }
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: LocalizedText('未能打開連結，已複製：$url')));
+}
+
+enum MeshNetworkMode { online, offline }
+
+enum WifiTransportMode { bluetooth, wifi }
+
+enum AppLanguage { english, traditionalChinese, simplifiedChinese }
+
+AppLanguage _currentAppLanguage = AppLanguage.traditionalChinese;
+
+extension AppLanguageDetails on AppLanguage {
+  String get code => switch (this) {
+    AppLanguage.english => 'en',
+    AppLanguage.traditionalChinese => 'zh-Hant',
+    AppLanguage.simplifiedChinese => 'zh-Hans',
+  };
+
+  String get label => switch (this) {
+    AppLanguage.english => 'English',
+    AppLanguage.traditionalChinese => '繁體中文',
+    AppLanguage.simplifiedChinese => '简体中文',
+  };
+
+  static AppLanguage fromCode(String? code) => AppLanguage.values.firstWhere(
+    (language) => language.code == code,
+    orElse: () => AppLanguage.traditionalChinese,
+  );
+}
+
+class _AppLanguageScope extends InheritedWidget {
+  const _AppLanguageScope({
+    required this.language,
+    required this.onChanged,
+    required super.child,
+  });
+
+  final AppLanguage language;
+  final ValueChanged<AppLanguage> onChanged;
+
+  static _AppLanguageScope of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_AppLanguageScope>()!;
+
+  @override
+  bool updateShouldNotify(_AppLanguageScope oldWidget) =>
+      language != oldWidget.language;
+}
+
+String _tr(
+  BuildContext context,
+  String english,
+  String traditional,
+  String simplified,
+) {
+  return switch (_AppLanguageScope.of(context).language) {
+    AppLanguage.english => english,
+    AppLanguage.traditionalChinese => traditional,
+    AppLanguage.simplifiedChinese => simplified,
+  };
+}
+
+const Map<String, String> _featureEnglishTranslations = <String, String>{
+  'iPhone 與 Android 對接只可使用藍芽 MESH。':
+      'iPhone and Android can only connect using Bluetooth MESH.',
+  '分享 / 交換': 'Share / exchange',
+  '分享 / 交換物資': 'Share / exchange supplies',
+  '免費分享': 'Free sharing',
+  '交換物資': 'Exchange supplies',
+  '希望交換物資': 'Wanted in exchange',
+  '發布交換': 'Post exchange',
+  '新增求助': 'Add help request',
+  '需要甚麼協助': 'What help do you need?',
+  '地點 / 補充資料': 'Location / additional details',
+  '發布求助': 'Post help request',
+  '尋找求助': 'Find help requests',
+  '求助列表': 'Help requests',
+  '搜尋求助、地點或求助者': 'Search requests, locations, or requesters',
+  '暫未有人求助。': 'There are no help requests yet.',
+  '找不到符合的求助。': 'No matching help requests found.',
+  '未列地點或補充資料': 'No location or additional details',
+  '引用求助者名稱聊天': 'Quote requester name in chat',
+  '標記已解決': 'Mark as resolved',
+  '請先輸入求助內容。': 'Please enter what help you need.',
+  '找不到這項求助。': 'This help request cannot be found.',
+  '只有求助者可以標記為已解決。': 'Only the requester can mark this as resolved.',
+  '這項求助已標記為已解決。': 'This help request is already resolved.',
+  '開活動': 'Create activity',
+  '建立雷達活動': 'Create radar activity',
+  '活動類型': 'Activity type',
+  '互助': 'Mutual aid',
+  '分享': 'Sharing',
+  '醫療': 'Medical',
+  '心靈': 'Wellbeing',
+  '活動名稱': 'Activity name',
+  '活動詳情 / 集合方式': 'Details / meeting instructions',
+  '建立活動': 'Create activity',
+  '正在定位，定位完成後請再開活動。':
+      'Locating now. Create the activity after location is ready.',
+  '今天已建立 3 次活動，請於明天再建立。':
+      'You have created 3 activities today. Please try again tomorrow.',
+  '請先在光之雷達定位，才可建立活動。':
+      'Locate yourself on Light Radar before creating an activity.',
+  '請先輸入活動名稱。': 'Please enter an activity name.',
+  '未提供活動詳情。': 'No activity details provided.',
+  '引用主辦者聊天': 'Quote host in chat',
+  '這個用戶暫未有活動。': 'This user has no active activities.',
+  '引用用戶聊天': 'Quote user in chat',
+};
+
+const Map<String, String> _featureSimplifiedTranslations = <String, String>{
+  'iPhone 與 Android 對接只可使用藍芽 MESH。': 'iPhone 与 Android 对接只可使用蓝牙 MESH。',
+  '分享 / 交換': '分享 / 交换',
+  '分享 / 交換物資': '分享 / 交换物资',
+  '免費分享': '免费分享',
+  '交換物資': '交换物资',
+  '希望交換物資': '希望交换物资',
+  '發布交換': '发布交换',
+  '新增求助': '新增求助',
+  '需要甚麼協助': '需要什么协助',
+  '地點 / 補充資料': '地点 / 补充资料',
+  '發布求助': '发布求助',
+  '尋找求助': '寻找求助',
+  '求助列表': '求助列表',
+  '搜尋求助、地點或求助者': '搜索求助、地点或求助者',
+  '暫未有人求助。': '暂时没有人求助。',
+  '找不到符合的求助。': '找不到符合的求助。',
+  '未列地點或補充資料': '未列地点或补充资料',
+  '引用求助者名稱聊天': '引用求助者名称聊天',
+  '標記已解決': '标记已解决',
+  '請先輸入求助內容。': '请先输入求助内容。',
+  '找不到這項求助。': '找不到这项求助。',
+  '只有求助者可以標記為已解決。': '只有求助者可以标记为已解决。',
+  '這項求助已標記為已解決。': '这项求助已标记为已解决。',
+  '開活動': '开活动',
+  '建立雷達活動': '建立雷达活动',
+  '活動類型': '活动类型',
+  '互助': '互助',
+  '分享': '分享',
+  '醫療': '医疗',
+  '心靈': '心灵',
+  '活動名稱': '活动名称',
+  '活動詳情 / 集合方式': '活动详情 / 集合方式',
+  '建立活動': '建立活动',
+  '正在定位，定位完成後請再開活動。': '正在定位，定位完成后请再开活动。',
+  '今天已建立 3 次活動，請於明天再建立。': '今天已建立 3 次活动，请于明天再建立。',
+  '請先在光之雷達定位，才可建立活動。': '请先在光之雷达定位，才可建立活动。',
+  '請先輸入活動名稱。': '请先输入活动名称。',
+  '未提供活動詳情。': '未提供活动详情。',
+  '引用主辦者聊天': '引用主办者聊天',
+  '這個用戶暫未有活動。': '这个用户暂时没有活动。',
+  '引用用戶聊天': '引用用户聊天',
+};
+
+String? _localizedFeaturePattern(String value, AppLanguage language) {
+  if (language == AppLanguage.traditionalChinese) {
+    return null;
+  }
+
+  String? group(RegExp pattern, int index) =>
+      pattern.firstMatch(value)?.group(index);
+
+  final helpCount = group(RegExp(r'^(\d+) 項求助$'), 1);
+  if (helpCount != null) {
+    return language == AppLanguage.english
+        ? '$helpCount help requests'
+        : '$helpCount 项求助';
+  }
+  final wanted = group(RegExp(r'^希望交換：(.+)$'), 1);
+  if (wanted != null) {
+    return language == AppLanguage.english ? 'Wanted: $wanted' : '希望交换：$wanted';
+  }
+  final activityHint = RegExp(
+    r'^活動會標記在目前位置，24 小時後自動結束。今日尚可建立 (\d+) 次。$',
+  ).firstMatch(value);
+  if (activityHint != null) {
+    final remaining = activityHint.group(1) ?? '0';
+    return language == AppLanguage.english
+        ? 'The activity is pinned to your current location and ends automatically after 24 hours. You can create $remaining more today.'
+        : '活动会标记在目前位置，24 小时后自动结束。今天还可建立 $remaining 次。';
+  }
+  final activityCount = group(RegExp(r'^雷達活動 (\d+) 個$'), 1);
+  if (activityCount != null) {
+    return language == AppLanguage.english
+        ? '$activityCount radar activities'
+        : '雷达活动 $activityCount 个';
+  }
+
+  for (final entry in <(RegExp, String, String)>[
+    (RegExp(r'^已發布交換物資：(.+)$'), 'Exchange posted: @@1@@', '已发布交换物资：@@1@@'),
+    (RegExp(r'^已發布求助：(.+)$'), 'Help request posted: @@1@@', '已发布求助：@@1@@'),
+    (
+      RegExp(r'^已將 (.+) 標記為已解決。$'),
+      'Marked @@1@@ as resolved.',
+      '已将 @@1@@ 标记为已解决。',
+    ),
+    (
+      RegExp(r'^(.+) 的求助已解決：(.+)$'),
+      '@@1@@ resolved a help request: @@2@@',
+      '@@1@@ 的求助已解决：@@2@@',
+    ),
+    (
+      RegExp(r'^收到 (.+) 的求助：(.+)$'),
+      'Help request from @@1@@: @@2@@',
+      '收到 @@1@@ 的求助：@@2@@',
+    ),
+    (
+      RegExp(r'^收到 (.+) 的交換物資：(.+)$'),
+      'Exchange offered by @@1@@: @@2@@',
+      '收到 @@1@@ 的交换物资：@@2@@',
+    ),
+    (
+      RegExp(r'^已建立(.+)活動：(.+)（今日尚可建立 (\d+) 次）$'),
+      '@@1@@ activity created: @@2@@ (@@3@@ remaining today)',
+      '已建立@@1@@活动：@@2@@（今天还可建立 @@3@@ 次）',
+    ),
+    (
+      RegExp(r'^收到 (.+) 的(.+)活動：(.+)$'),
+      '@@2@@ activity from @@1@@: @@3@@',
+      '收到 @@1@@ 的@@2@@活动：@@3@@',
+    ),
+    (RegExp(r'^活動有效至 (.+)$'), 'Activity valid until @@1@@', '活动有效至 @@1@@'),
+    (RegExp(r'^(.+)活動 · (.+)$'), '@@1@@ activity · @@2@@', '@@1@@活动 · @@2@@'),
+    (RegExp(r'^(.+)活動：(.+)$'), '@@1@@ activity: @@2@@', '@@1@@活动：@@2@@'),
+    (RegExp(r'^(.+) 的活動$'), '@@1@@ activities', '@@1@@ 的活动'),
+    (RegExp(r'^(\d+) 個有效活動$'), '@@1@@ active activities', '@@1@@ 个有效活动'),
+  ]) {
+    final match = entry.$1.firstMatch(value);
+    if (match == null) continue;
+    var result = language == AppLanguage.english ? entry.$2 : entry.$3;
+    for (var index = 1; index <= match.groupCount; index += 1) {
+      result = result.replaceAll('@@$index@@', match.group(index) ?? '');
+    }
+    return result;
+  }
+  return null;
+}
+
+String _localizedUiText(String value, {AppLanguage? language}) {
+  final activeLanguage = language ?? _currentAppLanguage;
+  final adminTranslations = switch (activeLanguage) {
+    AppLanguage.english => _adminEnglishTranslations,
+    AppLanguage.simplifiedChinese => _adminSimplifiedTranslations,
+    AppLanguage.traditionalChinese => const <String, String>{},
+  };
+  final adminExact = adminTranslations[value];
+  if (adminExact != null) return adminExact;
+
+  final featureTranslations = switch (activeLanguage) {
+    AppLanguage.english => _featureEnglishTranslations,
+    AppLanguage.simplifiedChinese => _featureSimplifiedTranslations,
+    AppLanguage.traditionalChinese => const <String, String>{},
+  };
+  final featureExact = featureTranslations[value];
+  if (featureExact != null) return featureExact;
+  final featurePattern = _localizedFeaturePattern(value, activeLanguage);
+  if (featurePattern != null) return featurePattern;
+
+  final translations = switch (activeLanguage) {
+    AppLanguage.english => uiEnglishTranslations,
+    AppLanguage.simplifiedChinese => uiSimplifiedTranslations,
+    AppLanguage.traditionalChinese => const <String, String>{},
+  };
+  final exact = translations[value];
+  if (exact != null) return exact;
+
+  final patterns = switch (activeLanguage) {
+    AppLanguage.english => uiEnglishPatterns,
+    AppLanguage.simplifiedChinese => uiSimplifiedPatterns,
+    AppLanguage.traditionalChinese => const <UiTranslationPattern>[],
+  };
+  for (final entry in patterns) {
+    final match = entry.pattern.firstMatch(value);
+    if (match == null) continue;
+    var result = entry.replacement;
+    for (var index = 1; index <= match.groupCount; index += 1) {
+      result = result.replaceAll('@@$index@@', match.group(index) ?? '');
+    }
+    return result;
+  }
+  return value;
+}
+
+const Map<String, String> _adminEnglishTranslations = <String, String>{
+  'Admin 驗證': 'Admin verification',
+  'Admin 密碼': 'Admin password',
+  '驗證': 'Verify',
+  'Admin 密碼不正確。': 'Incorrect admin password.',
+  'Admin 管理': 'Admin management',
+  '管理留言、光團、物資及用戶禁言。': 'Manage comments, groups, supplies, and user muting.',
+  '開啟 Admin 管理': 'Open admin management',
+  '留言': 'Comments',
+  '目前沒有留言。': 'There are currently no comments.',
+  '刪除留言': 'Delete comment',
+  '目前沒有可刪除的光團。': 'There are currently no removable groups.',
+  '刪除光團': 'Delete group',
+  '目前沒有物資。': 'There are currently no supplies.',
+  '刪除物資': 'Delete supply',
+  '活動': 'Activities',
+  '目前沒有活動。': 'There are currently no activities.',
+  '刪除活動': 'Delete activity',
+  '用戶禁言': 'User muting',
+  '目前沒有其他在線用戶。': 'There are currently no other online users.',
+  '已禁言': 'Muted',
+  '可發言': 'Can speak',
+  '你已被管理員禁言，暫時不能傳送訊息。':
+      'You have been muted by an admin and cannot send messages for now.',
+  '用戶支援': 'User support',
+  'WhatsApp 查詢': 'WhatsApp enquiry',
+  'LINE 聯絡': 'LINE contact',
+  'QQ 頻道': 'QQ channel',
+};
+
+const Map<String, String> _adminSimplifiedTranslations = <String, String>{
+  'Admin 驗證': 'Admin 验证',
+  'Admin 密碼': 'Admin 密码',
+  '驗證': '验证',
+  'Admin 密碼不正確。': 'Admin 密码不正确。',
+  'Admin 管理': 'Admin 管理',
+  '管理留言、光團、物資及用戶禁言。': '管理留言、光团、物资及用户禁言。',
+  '開啟 Admin 管理': '开启 Admin 管理',
+  '留言': '留言',
+  '目前沒有留言。': '目前没有留言。',
+  '刪除留言': '删除留言',
+  '目前沒有可刪除的光團。': '目前没有可删除的光团。',
+  '刪除光團': '删除光团',
+  '目前沒有物資。': '目前没有物资。',
+  '刪除物資': '删除物资',
+  '活動': '活动',
+  '目前沒有活動。': '目前没有活动。',
+  '刪除活動': '删除活动',
+  '用戶禁言': '用户禁言',
+  '目前沒有其他在線用戶。': '目前没有其他在线用户。',
+  '已禁言': '已禁言',
+  '可發言': '可发言',
+  '你已被管理員禁言，暫時不能傳送訊息。': '你已被管理员禁言，暂时不能发送消息。',
+  '用戶支援': '用户支持',
+  'WhatsApp 查詢': 'WhatsApp 查询',
+  'LINE 聯絡': 'LINE 联系',
+  'QQ 頻道': 'QQ 频道',
+};
+
+class LocalizedText extends StatelessWidget {
+  const LocalizedText(
+    this.data, {
+    super.key,
+    this.style,
+    this.strutStyle,
+    this.textAlign,
+    this.textDirection,
+    this.locale,
+    this.softWrap,
+    this.overflow,
+    this.textScaler,
+    this.maxLines,
+    this.semanticsLabel,
+    this.textWidthBasis,
+    this.textHeightBehavior,
+    this.selectionColor,
+  }) : textSpan = null;
+
+  const LocalizedText.rich(
+    this.textSpan, {
+    super.key,
+    this.style,
+    this.strutStyle,
+    this.textAlign,
+    this.textDirection,
+    this.locale,
+    this.softWrap,
+    this.overflow,
+    this.textScaler,
+    this.maxLines,
+    this.semanticsLabel,
+    this.textWidthBasis,
+    this.textHeightBehavior,
+    this.selectionColor,
+  }) : data = null;
+
+  final String? data;
+  final InlineSpan? textSpan;
+  final TextStyle? style;
+  final StrutStyle? strutStyle;
+  final TextAlign? textAlign;
+  final TextDirection? textDirection;
+  final Locale? locale;
+  final bool? softWrap;
+  final TextOverflow? overflow;
+  final TextScaler? textScaler;
+  final int? maxLines;
+  final String? semanticsLabel;
+  final TextWidthBasis? textWidthBasis;
+  final TextHeightBehavior? textHeightBehavior;
+  final Color? selectionColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final language = _AppLanguageScope.of(context).language;
+    final span = textSpan;
+    if (span != null) {
+      return material.Text.rich(
+        span,
+        style: style,
+        strutStyle: strutStyle,
+        textAlign: textAlign,
+        textDirection: textDirection,
+        locale: locale,
+        softWrap: softWrap,
+        overflow: overflow,
+        textScaler: textScaler,
+        maxLines: maxLines,
+        semanticsLabel: semanticsLabel == null
+            ? null
+            : _localizedUiText(semanticsLabel!, language: language),
+        textWidthBasis: textWidthBasis,
+        textHeightBehavior: textHeightBehavior,
+        selectionColor: selectionColor,
+      );
+    }
+    return material.Text(
+      _localizedUiText(data ?? '', language: language),
+      style: style,
+      strutStyle: strutStyle,
+      textAlign: textAlign,
+      textDirection: textDirection,
+      locale: locale,
+      softWrap: softWrap,
+      overflow: overflow,
+      textScaler: textScaler,
+      maxLines: maxLines,
+      semanticsLabel: semanticsLabel == null
+          ? null
+          : _localizedUiText(semanticsLabel!, language: language),
+      textWidthBasis: textWidthBasis,
+      textHeightBehavior: textHeightBehavior,
+      selectionColor: selectionColor,
+    );
+  }
+}
+
+class LocalizedTooltip extends StatelessWidget {
+  const LocalizedTooltip({
+    super.key,
+    required this.message,
+    required this.child,
+  });
+
+  final String message;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final language = _AppLanguageScope.of(context).language;
+    return material.Tooltip(
+      message: _localizedUiText(message, language: language),
+      child: child,
+    );
+  }
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  runApp(const PropagationLightApp(showLaunchScreen: true));
+}
+
+class PropagationLightApp extends StatefulWidget {
+  const PropagationLightApp({
+    super.key,
+    this.autoStart = true,
+    this.enableWebView = true,
+    this.showLaunchScreen = false,
+    this.onTermsDeclined,
+  });
+
+  final bool autoStart;
+  final bool enableWebView;
+  final bool showLaunchScreen;
+  final Future<void> Function()? onTermsDeclined;
+
+  @override
+  State<PropagationLightApp> createState() => _PropagationLightAppState();
+}
+
+class _PropagationLightAppState extends State<PropagationLightApp> {
+  static const _languagePrefsKey = 'app.language';
+  AppLanguage _language = AppLanguage.traditionalChinese;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentAppLanguage = _language;
+    unawaited(_loadLanguage());
+  }
+
+  Future<void> _loadLanguage() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = AppLanguageDetails.fromCode(
+      prefs.getString(_languagePrefsKey),
+    );
+    _currentAppLanguage = saved;
+    if (mounted && saved != _language) {
+      setState(() => _language = saved);
+    }
+  }
+
+  void _setLanguage(AppLanguage language) {
+    if (language == _language) return;
+    _currentAppLanguage = language;
+    setState(() => _language = language);
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setString(_languagePrefsKey, language.code),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const seed = Color(0xFF0D7C66);
+
+    return _AppLanguageScope(
+      language: _language,
+      onChanged: _setLanguage,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: switch (_language) {
+          AppLanguage.english => 'Propagation Light AIECO.HK',
+          AppLanguage.traditionalChinese => '傳播光 AIECO.HK',
+          AppLanguage.simplifiedChinese => '传播光 AIECO.HK',
+        },
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: seed,
+            brightness: Brightness.light,
+          ),
+          scaffoldBackgroundColor: const Color(0xFFF7F8F4),
+          appBarTheme: const AppBarTheme(
+            centerTitle: false,
+            elevation: 0,
+            backgroundColor: Color(0xFFF7F8F4),
+            foregroundColor: Color(0xFF17211E),
+          ),
+          cardTheme: CardThemeData(
+            color: Colors.white,
+            elevation: 0,
+            margin: EdgeInsets.zero,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: const BorderSide(color: Color(0xFFE0E5DE)),
+            ),
+          ),
+          inputDecorationTheme: InputDecorationTheme(
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Color(0xFFD7DED7)),
+            ),
+          ),
+          useMaterial3: true,
+        ),
+        home: widget.showLaunchScreen
+            ? _LaunchGate(
+                child: PropagationLightHome(
+                  autoStart: widget.autoStart,
+                  enableWebView: widget.enableWebView,
+                  onTermsDeclined: widget.onTermsDeclined,
+                ),
+              )
+            : PropagationLightHome(
+                autoStart: widget.autoStart,
+                enableWebView: widget.enableWebView,
+                onTermsDeclined: widget.onTermsDeclined,
+              ),
+      ),
+    );
+  }
+}
+
+class _LaunchGate extends StatefulWidget {
+  const _LaunchGate({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_LaunchGate> createState() => _LaunchGateState();
+}
+
+class _LaunchGateState extends State<_LaunchGate> {
+  var _showLaunchScreen = true;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(_launchScreenDuration, () {
+      if (mounted) {
+        setState(() => _showLaunchScreen = false);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _showLaunchScreen ? const _LaunchScreen() : widget.child;
+  }
+}
+
+class _LaunchScreen extends StatelessWidget {
+  const _LaunchScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: Colors.black,
+      child: SizedBox.expand(
+        child: Image(image: AssetImage(_launchImageAsset), fit: BoxFit.cover),
+      ),
+    );
+  }
+}
+
+class PropagationLightHome extends StatefulWidget {
+  const PropagationLightHome({
+    super.key,
+    required this.autoStart,
+    required this.enableWebView,
+    this.onTermsDeclined,
+  });
+
+  final bool autoStart;
+  final bool enableWebView;
+  final Future<void> Function()? onTermsDeclined;
+
+  @override
+  State<PropagationLightHome> createState() => _PropagationLightHomeState();
+}
+
+class _PropagationLightHomeState extends State<PropagationLightHome>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  late final MeshChatService _mesh;
+  late final WifiMeshController _wifiMesh;
+  late final LightRadarController _radar;
+  late final TabController _tabController;
+  final _sosLight = _SosLightController();
+  final _backgroundMesh = _BackgroundMeshController();
+  final TextEditingController _messageController = TextEditingController();
+  final ScrollController _messagesScrollController = ScrollController();
+  Timer? _radarTrackingTimer;
+  Timer? _wirelessStatusTimer;
+  Timer? _wifiGroupTimer;
+  Duration? _activeRadarTrackingInterval;
+  DateTime? _lastRadarLocationRefreshAt;
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  bool _radarTrackingBusy = false;
+  bool _wirelessStatusBusy = false;
+  bool _localNetworkPreferenceBusy = false;
+  bool _startupPermissionsRequested = false;
+  bool? _lastPreferLocalNetwork;
+  WifiTransportMode? _lastSyncedTransportMode;
+  String? _lastWirelessStatusSignature;
+  String? _lastP2pOwnerSyncEndpoint;
+  DateTime? _lastP2pOwnerSyncAt;
+  int _lastNotifiedIncomingMessageVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _mesh = MeshChatService();
+    _wifiMesh = WifiMeshController();
+    _radar = LightRadarController();
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(_handleTabChange);
+    _sosLight.addListener(_handleSosLightChange);
+    _mesh.addListener(_handleMeshChange);
+
+    unawaited(_initializeMesh());
+  }
+
+  Future<void> _initializeMesh() async {
+    await _mesh.loadSavedDisplayName();
+    await _mesh.loadModerationPreferences();
+
+    if (!mounted) {
+      return;
+    }
+
+    if (widget.autoStart) {
+      final accepted = await _ensureEulaAccepted();
+      if (!accepted || !mounted) {
+        return;
+      }
+      await _syncLocalNetworkPreference();
+      unawaited(_backgroundMesh.requestNotificationPermission());
+      if (Platform.isIOS) {
+        _scheduleAutomaticRadarLocation();
+        _scheduleStartupPermissionsRequest(delay: const Duration(seconds: 3));
+      } else {
+        _scheduleStartupPermissionsRequest();
+        _scheduleAutomaticRadarLocation(delay: const Duration(seconds: 4));
+      }
+      unawaited(_mesh.start());
+      unawaited(_wifiMesh.refreshStatus());
+      _startWirelessStatusTracking();
+      _startWifiGroupTracking();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _mesh.removeListener(_handleMeshChange);
+    _mesh.dispose();
+    _wifiMesh.dispose();
+    _radar.dispose();
+    unawaited(_backgroundMesh.syncService(enabled: false));
+    _sosLight.removeListener(_handleSosLightChange);
+    _sosLight.dispose();
+    _tabController.removeListener(_handleTabChange);
+    _tabController.dispose();
+    _radarTrackingTimer?.cancel();
+    _wirelessStatusTimer?.cancel();
+    _wifiGroupTimer?.cancel();
+    _messageController.dispose();
+    _messagesScrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appLifecycleState = state;
+    _restartRadarTrackingIfActive();
+    unawaited(_syncBackgroundMeshState());
+
+    if (state == AppLifecycleState.resumed && widget.autoStart) {
+      _mesh.setPresenceVisible(true);
+      unawaited(_backgroundMesh.clearChatNotifications());
+      unawaited(_refreshWirelessStatusAndRejoin(forceRejoin: true));
+      unawaited(_locateRadar(force: true));
+    } else if ((state == AppLifecycleState.inactive ||
+            state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        widget.autoStart) {
+      // Keep the transport available for background messages, but do not show
+      // a user who has left the app as online on other devices.
+      _mesh.setPresenceVisible(false);
+    }
+  }
+
+  void _handleSosLightChange() {
+    final active = _sosLight.active;
+    if (_mesh.sosActive == active) {
+      return;
+    }
+
+    _mesh.setSosActive(active);
+    _restartRadarTrackingIfActive();
+    if (active) {
+      unawaited(_locateRadar(force: true));
+    }
+  }
+
+  void _handleMeshChange() {
+    if (!widget.autoStart) {
+      return;
+    }
+    _maybeNotifyIncomingMessage();
+    unawaited(_syncBackgroundMeshState());
+    unawaited(_syncLocalNetworkPreference());
+  }
+
+  void _handleTabChange() {
+    if (!widget.autoStart) {
+      return;
+    }
+    if (_tabController.index == 2) {
+      _restartRadarTrackingIfActive();
+      unawaited(_locateRadar(force: true));
+    }
+  }
+
+  bool get _appInForeground => _appLifecycleState == AppLifecycleState.resumed;
+
+  bool get _radarNeedsActiveLocation =>
+      _appInForeground && (_tabController.index == 2 || _sosLight.active);
+
+  void _maybeNotifyIncomingMessage() {
+    final version = _mesh.incomingMessageVersion;
+    if (version == 0 || version == _lastNotifiedIncomingMessageVersion) {
+      return;
+    }
+
+    _lastNotifiedIncomingMessageVersion = version;
+    if (_appInForeground) {
+      return;
+    }
+
+    final message = _mesh.lastIncomingMessage;
+    if (message != null) {
+      unawaited(_backgroundMesh.showChatNotification(message));
+    }
+  }
+
+  Future<void> _syncBackgroundMeshState() {
+    return _backgroundMesh.syncService(
+      enabled: widget.autoStart && _mesh.isRunning,
+    );
+  }
+
+  Future<bool> _ensureEulaAccepted() async {
+    if (_mesh.eulaAccepted) {
+      return true;
+    }
+    await _mesh.loadModerationPreferences();
+    if (!mounted) {
+      return false;
+    }
+    if (_mesh.eulaAccepted) {
+      return true;
+    }
+
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _EulaAgreementDialog(),
+    );
+    if (!mounted) {
+      return false;
+    }
+
+    if (accepted == true) {
+      await _mesh.acceptEula();
+      return true;
+    }
+
+    _mesh.setStatus('須先同意最終用戶許可協議，才可使用光之通道。APP 將會關閉。');
+    _showMeshStatusSnack();
+    await _closeAppAfterTermsDeclined();
+    return false;
+  }
+
+  Future<void> _closeAppAfterTermsDeclined() async {
+    final handler = widget.onTermsDeclined;
+    if (handler != null) {
+      await handler();
+      return;
+    }
+
+    await SystemNavigator.pop();
+  }
+
+  void _openChatSafetyCenter() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _ChatSafetySheet(
+        mesh: _mesh,
+        onAcceptTerms: () => unawaited(_ensureEulaAccepted()),
+      ),
+    );
+  }
+
+  void _openAccountPrivacyCenter() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _AccountPrivacySheet(
+        mesh: _mesh,
+        onDeleteAccount: _confirmDeleteAccount,
+      ),
+    );
+  }
+
+  Future<void> _editUserName() async {
+    final nextName = await showDialog<String>(
+      context: context,
+      builder: (_) => _UserNameEditDialog(initialUserName: _mesh.userName),
+    );
+    if (nextName == null || !mounted) {
+      return;
+    }
+
+    _mesh.setUserName(nextName);
+    _showMeshStatusSnack();
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const LocalizedText('刪除本機帳號與資料？'),
+          content: const LocalizedText(
+            '這會停止光之網絡，刪除本機光點身份、光點名稱、用戶名稱、條款狀態、封鎖名單、隱藏訊息、舉報記錄、目前訊息、物資和定位快取，並建立新的匿名光點身份。刪除帳號功能 1 天內只可使用 1 次。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const LocalizedText('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.delete_forever),
+              label: const LocalizedText('刪除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+
+    final deleted = await _mesh.deleteLocalAccountAndData();
+    if (!mounted) {
+      return;
+    }
+    if (!deleted) {
+      await _showDeleteAccountBlockedPopup();
+      return;
+    }
+
+    if (_sosLight.active) {
+      await _sosLight.stop();
+    }
+    _messageController.clear();
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: LocalizedText(_mesh.status),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  Future<void> _showDeleteAccountBlockedPopup() {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const LocalizedText('暫時不能刪除帳號'),
+          content: LocalizedText(_mesh.status),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const LocalizedText('知道'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _reportMessage(MeshMessage message) async {
+    final draft = await _askReportDraft(
+      title: '舉報不良訊息',
+      targetLabel: '${message.senderName}：${_shortReportPreview(message.text)}',
+    );
+    if (draft == null) {
+      return;
+    }
+
+    _mesh.reportMessage(message, reason: draft.reason, detail: draft.detail);
+    _showMeshStatusSnack();
+  }
+
+  Future<void> _reportUser(MeshOnlineUser user) async {
+    final draft = await _askReportDraft(
+      title: '舉報惡意用戶',
+      targetLabel: user.name,
+    );
+    if (draft == null) {
+      return;
+    }
+
+    _mesh.reportUser(
+      userId: user.id,
+      userName: user.name,
+      reason: draft.reason,
+      detail: draft.detail,
+    );
+    _showMeshStatusSnack();
+  }
+
+  Future<void> _blockUser(String userId, String userName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const LocalizedText('封鎖用戶？'),
+          content: LocalizedText('封鎖 $userName 後，對方的訊息、物資和定位會立即從你的信息流隱藏。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const LocalizedText('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.block),
+              label: const LocalizedText('封鎖'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true) {
+      return;
+    }
+
+    _mesh.blockUser(userId, userName: userName);
+    _showMeshStatusSnack();
+  }
+
+  void _deleteMessageFromFeed(MeshMessage message) {
+    _mesh.deleteMessageFromFeed(message.id);
+    _showMeshStatusSnack();
+  }
+
+  Future<_ModerationReportDraft?> _askReportDraft({
+    required String title,
+    required String targetLabel,
+  }) {
+    return showDialog<_ModerationReportDraft>(
+      context: context,
+      builder: (_) =>
+          _ReportContentDialog(title: title, targetLabel: targetLabel),
+    );
+  }
+
+  void _showMeshStatusSnack() {
+    if (!mounted || _mesh.status.isEmpty) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: LocalizedText(_mesh.status),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  static String _shortReportPreview(String value) {
+    final clean = value.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (clean.length <= 42) {
+      return clean;
+    }
+    return '${clean.substring(0, 42)}...';
+  }
+
+  Future<void> _sendMessage() async {
+    final accepted = await _ensureEulaAccepted();
+    if (!accepted) {
+      return;
+    }
+
+    final text = _messageController.text.trim();
+    if (text.isEmpty) {
+      return;
+    }
+
+    final sent = await _mesh.sendMessage(text);
+    if (sent) {
+      _messageController.clear();
+      _scrollMessagesToEnd();
+    } else {
+      _showMeshStatusSnack();
+    }
+  }
+
+  Future<void> _createRoom() async {
+    final accepted = await _ensureEulaAccepted();
+    if (!accepted || !mounted) {
+      return;
+    }
+
+    final roomName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        var draftName = '';
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final cleanName = draftName.trim();
+            final canCreate = cleanName.isNotEmpty;
+
+            void submit(String value) {
+              final clean = value.trim();
+              if (clean.isEmpty) {
+                return;
+              }
+              Navigator.of(dialogContext).pop(clean);
+            }
+
+            return AlertDialog(
+              title: const LocalizedText('建立光團'),
+              content: TextField(
+                key: const ValueKey('room-name-input'),
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                  labelText: _localizedUiText('光團名稱'),
+                  prefixIcon: Icon(Icons.groups_outlined),
+                ),
+                onChanged: (value) => setDialogState(() => draftName = value),
+                onSubmitted: submit,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const LocalizedText('取消'),
+                ),
+                FilledButton.icon(
+                  onPressed: canCreate ? () => submit(cleanName) : null,
+                  icon: const Icon(Icons.add),
+                  label: const LocalizedText('建立'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (roomName == null) {
+      return;
+    }
+
+    final created = _mesh.createRoom(roomName);
+    if (!created) {
+      _showMeshStatusSnack();
+      return;
+    }
+    _scrollMessagesToEnd();
+  }
+
+  Future<void> _shareSupply() async {
+    final accepted = await _ensureEulaAccepted();
+    if (!accepted || !mounted) {
+      return;
+    }
+
+    final draft = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) {
+        var title = '';
+        var quantity = '';
+        var note = '';
+        var supplyType = MeshSupply.shareType;
+        var exchangeFor = '';
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final cleanTitle = title.trim();
+            final canShare = cleanTitle.isNotEmpty;
+
+            void submit() {
+              if (!canShare) {
+                return;
+              }
+              Navigator.of(dialogContext).pop(<String, String>{
+                'title': cleanTitle,
+                'quantity': quantity.trim(),
+                'note': note.trim(),
+                'type': supplyType,
+                'exchangeFor': exchangeFor.trim(),
+              });
+            }
+
+            return AlertDialog(
+              title: const LocalizedText('分享 / 交換物資'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<String>(
+                      key: const ValueKey('supply-type-input'),
+                      showSelectedIcon: false,
+                      segments: const [
+                        ButtonSegment<String>(
+                          value: MeshSupply.shareType,
+                          icon: Icon(Icons.volunteer_activism_outlined),
+                          label: LocalizedText('免費分享'),
+                        ),
+                        ButtonSegment<String>(
+                          value: MeshSupply.exchangeType,
+                          icon: Icon(Icons.swap_horiz),
+                          label: LocalizedText('交換物資'),
+                        ),
+                      ],
+                      selected: {supplyType},
+                      onSelectionChanged: (selection) =>
+                          setDialogState(() => supplyType = selection.single),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('supply-title-input'),
+                    autofocus: true,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: _localizedUiText('物資名稱'),
+                      prefixIcon: Icon(Icons.inventory_2_outlined),
+                    ),
+                    onChanged: (value) => setDialogState(() => title = value),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('supply-quantity-input'),
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: _localizedUiText('數量 / 狀態'),
+                      prefixIcon: Icon(Icons.format_list_numbered),
+                    ),
+                    onChanged: (value) =>
+                        setDialogState(() => quantity = value),
+                  ),
+                  if (supplyType == MeshSupply.exchangeType) ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const ValueKey('supply-exchange-for-input'),
+                      textInputAction: TextInputAction.next,
+                      decoration: InputDecoration(
+                        labelText: _localizedUiText('希望交換物資'),
+                        prefixIcon: Icon(Icons.swap_horiz),
+                      ),
+                      onChanged: (value) =>
+                          setDialogState(() => exchangeFor = value),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('supply-note-input'),
+                    minLines: 2,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
+                      labelText: _localizedUiText('備註 / 交收位置'),
+                      prefixIcon: Icon(Icons.place_outlined),
+                    ),
+                    onChanged: (value) => setDialogState(() => note = value),
+                    onSubmitted: (_) => submit(),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const LocalizedText('取消'),
+                ),
+                FilledButton.icon(
+                  onPressed: canShare ? submit : null,
+                  icon: Icon(
+                    supplyType == MeshSupply.exchangeType
+                        ? Icons.swap_horiz
+                        : Icons.volunteer_activism_outlined,
+                  ),
+                  label: LocalizedText(
+                    supplyType == MeshSupply.exchangeType ? '發布交換' : '分享',
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final shared = _mesh.shareSupply(
+      title: draft['title'] ?? '',
+      quantity: draft['quantity'] ?? '',
+      note: draft['note'] ?? '',
+      type: draft['type'] ?? MeshSupply.shareType,
+      exchangeFor: draft['exchangeFor'] ?? '',
+    );
+    if (!shared) {
+      _showMeshStatusSnack();
+    }
+  }
+
+  Future<void> _createHelpRequest() async {
+    final accepted = await _ensureEulaAccepted();
+    if (!accepted || !mounted) {
+      return;
+    }
+
+    final draft = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) {
+        var title = '';
+        var details = '';
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final cleanTitle = title.trim();
+
+            void submit() {
+              if (cleanTitle.isEmpty) {
+                return;
+              }
+              Navigator.of(dialogContext).pop(<String, String>{
+                'title': cleanTitle,
+                'details': details.trim(),
+              });
+            }
+
+            return AlertDialog(
+              title: const LocalizedText('新增求助'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    key: const ValueKey('help-title-input'),
+                    autofocus: true,
+                    textInputAction: TextInputAction.next,
+                    decoration: InputDecoration(
+                      labelText: _localizedUiText('需要甚麼協助'),
+                      prefixIcon: Icon(Icons.support_agent),
+                    ),
+                    onChanged: (value) => setDialogState(() => title = value),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    key: const ValueKey('help-details-input'),
+                    minLines: 2,
+                    maxLines: 4,
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
+                      labelText: _localizedUiText('地點 / 補充資料'),
+                      prefixIcon: Icon(Icons.place_outlined),
+                    ),
+                    onChanged: (value) => setDialogState(() => details = value),
+                    onSubmitted: (_) => submit(),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const LocalizedText('取消'),
+                ),
+                FilledButton.icon(
+                  onPressed: cleanTitle.isEmpty ? null : submit,
+                  icon: const Icon(Icons.add_alert_outlined),
+                  label: const LocalizedText('發布求助'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final created = _mesh.createHelpRequest(
+      title: draft['title'] ?? '',
+      details: draft['details'] ?? '',
+    );
+    if (!created) {
+      _showMeshStatusSnack();
+    }
+  }
+
+  Future<void> _wakeMeshAfterWifiReady() async {
+    if (_mesh.networkMode != MeshNetworkMode.offline) {
+      await _mesh.setNetworkMode(MeshNetworkMode.offline);
+    }
+    await _syncLocalNetworkPreference();
+    await _mesh.refreshNetworkPresence(forceRejoin: true);
+    for (final delay in const [
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+      Duration(seconds: 10),
+    ]) {
+      unawaited(
+        Future<void>.delayed(delay).then((_) {
+          if (!mounted) {
+            return;
+          }
+          unawaited(_mesh.refreshNetworkPresence());
+        }),
+      );
+    }
+  }
+
+  Future<void> _wakeMeshAfterPeerReady(WifiP2pPeer peer) async {
+    await _wakeMeshAfterWifiReady();
+    if (peer.hasLanEndpoint) {
+      await _mesh.syncLanPeer(peer);
+    }
+    await _syncWifiDirectOwnerIfReady(force: true);
+  }
+
+  void _scheduleStartupPermissionsRequest({Duration delay = Duration.zero}) {
+    if (_startupPermissionsRequested) {
+      return;
+    }
+
+    _startupPermissionsRequested = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.autoStart) {
+        return;
+      }
+      if (delay > Duration.zero) {
+        unawaited(
+          Future<void>.delayed(delay).then((_) {
+            if (!mounted || !widget.autoStart) {
+              return;
+            }
+            unawaited(_requestStartupPermissions());
+          }),
+        );
+        return;
+      }
+      unawaited(_requestStartupPermissions());
+    });
+  }
+
+  Future<void> _requestStartupPermissions() async {
+    await _wifiMesh.requestPermissions(automatic: true);
+
+    for (final delay in const [
+      Duration(milliseconds: 800),
+      Duration(seconds: 3),
+      Duration(seconds: 7),
+    ]) {
+      unawaited(
+        Future<void>.delayed(delay).then((_) {
+          if (!mounted || !widget.autoStart) {
+            return;
+          }
+          unawaited(_refreshWirelessStatusAndRejoin(forceRejoin: true));
+        }),
+      );
+    }
+  }
+
+  void _startWifiGroupTracking() {
+    if (_wifiGroupTimer != null) {
+      return;
+    }
+    _wifiGroupTimer = Timer.periodic(_wifiGroupInterval, (_) {
+      if (!mounted) return;
+      if (_mesh.networkMode != MeshNetworkMode.offline) return;
+      if (_wifiMesh.transportMode != WifiTransportMode.wifi) return;
+      if (_wifiMesh.isIOS) return;
+      if (_wifiMesh.boundToWifi) return;
+      if (_wifiMesh.connection?.groupFormed == true) return;
+      if (_wifiMesh.hotspot != null) return;
+      if (_wifiMesh.busy) return;
+      unawaited(_wifiMesh.createGroup());
+    });
+  }
+
+  void _startWirelessStatusTracking() {
+    if (_wirelessStatusTimer != null) {
+      return;
+    }
+
+    unawaited(_refreshWirelessStatusAndRejoin());
+    _wirelessStatusTimer = Timer.periodic(_wirelessStatusInterval, (_) {
+      if (mounted) {
+        unawaited(_refreshWirelessStatusAndRejoin());
+      }
+    });
+  }
+
+  Future<void> _refreshWirelessStatusAndRejoin({
+    bool forceRejoin = false,
+  }) async {
+    if (_wirelessStatusBusy || !widget.autoStart) {
+      return;
+    }
+
+    _wirelessStatusBusy = true;
+    try {
+      final previousSignature = _lastWirelessStatusSignature;
+      await _wifiMesh.refreshStatus(quiet: true);
+      await _syncLocalNetworkPreference();
+      final nextSignature = _wirelessStatusSignature();
+      _lastWirelessStatusSignature = nextSignature;
+
+      final wirelessReady = _selectedTransportReady();
+      final networkChanged =
+          previousSignature != null && previousSignature != nextSignature;
+
+      if (forceRejoin || (wirelessReady && networkChanged)) {
+        await _mesh.refreshNetworkPresence(forceRejoin: true);
+      } else if (wirelessReady && _mesh.isRunning) {
+        await _mesh.refreshNetworkPresence();
+      }
+
+      if (wirelessReady) {
+        await _syncWifiDirectOwnerIfReady(force: forceRejoin || networkChanged);
+        await _mesh.syncDiscoveredLanPeers(_wifiMesh.p2pPeers);
+      }
+    } finally {
+      _wirelessStatusBusy = false;
+    }
+  }
+
+  Future<void> _syncLocalNetworkPreference() async {
+    if (_localNetworkPreferenceBusy ||
+        (!_wifiMesh.isAndroid && !_wifiMesh.isIOS)) {
+      return;
+    }
+
+    final preferLocalNetwork = _mesh.networkMode == MeshNetworkMode.offline;
+    final nextTransportMode = _wifiMesh.transportMode;
+    final shouldSyncLocalPreference =
+        _wifiMesh.isAndroid && _lastPreferLocalNetwork != preferLocalNetwork;
+    final shouldSyncTransportMode =
+        _lastSyncedTransportMode != nextTransportMode;
+    if (!shouldSyncLocalPreference && !shouldSyncTransportMode) {
+      _mesh.setOfflineTransportMode(
+        _wifiMesh.transportMode,
+        ready: _selectedTransportReady(),
+      );
+      return;
+    }
+
+    _localNetworkPreferenceBusy = true;
+    try {
+      if (shouldSyncTransportMode) {
+        await _wifiMesh.setTransportMode(nextTransportMode);
+        _lastSyncedTransportMode = nextTransportMode;
+      }
+      if (shouldSyncLocalPreference) {
+        await _wifiMesh.setPreferLocalNetwork(preferLocalNetwork);
+        _lastPreferLocalNetwork = preferLocalNetwork;
+      }
+      _mesh.setOfflineTransportMode(
+        _wifiMesh.transportMode,
+        ready: _selectedTransportReady(),
+      );
+    } finally {
+      _localNetworkPreferenceBusy = false;
+    }
+  }
+
+  bool _selectedTransportReady() {
+    if (_wifiMesh.transportMode == WifiTransportMode.bluetooth) {
+      return _wifiMesh.boundToBluetooth;
+    }
+    return _wifiMesh.boundToWifi ||
+        _wifiMesh.connection?.groupFormed == true ||
+        _wifiMesh.hotspot != null;
+  }
+
+  Future<void> _syncWifiDirectOwnerIfReady({bool force = false}) async {
+    if (_mesh.networkMode != MeshNetworkMode.offline) {
+      return;
+    }
+    if (_wifiMesh.transportMode != WifiTransportMode.wifi) {
+      _lastP2pOwnerSyncEndpoint = null;
+      _lastP2pOwnerSyncAt = null;
+      return;
+    }
+
+    final connection = _wifiMesh.connection;
+    if (connection == null ||
+        !connection.groupFormed ||
+        connection.isGroupOwner ||
+        connection.groupOwnerAddress.isEmpty) {
+      _lastP2pOwnerSyncEndpoint = null;
+      _lastP2pOwnerSyncAt = null;
+      return;
+    }
+
+    final endpoint =
+        '${connection.groupOwnerAddress}:${MeshChatService.tcpPort}';
+    final lastSyncAt = _lastP2pOwnerSyncAt;
+    if (!force &&
+        _lastP2pOwnerSyncEndpoint == endpoint &&
+        lastSyncAt != null &&
+        DateTime.now().difference(lastSyncAt) < const Duration(seconds: 15)) {
+      return;
+    }
+
+    _lastP2pOwnerSyncEndpoint = endpoint;
+    _lastP2pOwnerSyncAt = DateTime.now();
+    await _mesh.syncLanEndpoint(
+      name: 'Wi‑Fi Direct owner',
+      host: connection.groupOwnerAddress,
+      port: MeshChatService.tcpPort,
+    );
+  }
+
+  String _wirelessStatusSignature() {
+    final connection = _wifiMesh.connection;
+    final group = _wifiMesh.group;
+    final hotspot = _wifiMesh.hotspot;
+    return [
+      _wifiMesh.wifiEnabled,
+      _wifiMesh.bluetoothEnabled,
+      _wifiMesh.boundToWifi,
+      _wifiMesh.boundToBluetooth,
+      _wifiMesh.transportMode.name,
+      _wifiMesh.networkGeneration,
+      connection?.groupFormed ?? false,
+      connection?.isGroupOwner ?? false,
+      connection?.groupOwnerAddress ?? '',
+      group?.networkName ?? '',
+      hotspot?.ssid ?? '',
+    ].join('|');
+  }
+
+  void _scheduleAutomaticRadarLocation({Duration delay = Duration.zero}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.autoStart) {
+        return;
+      }
+      if (delay > Duration.zero) {
+        unawaited(
+          Future<void>.delayed(delay).then((_) {
+            if (!mounted || !widget.autoStart) {
+              return;
+            }
+            unawaited(_locateRadar());
+          }),
+        );
+        return;
+      }
+      unawaited(_locateRadar());
+    });
+  }
+
+  Future<void> _locateRadar({bool force = false}) async {
+    final location = await _refreshRadarLocation(force: force);
+    if (location != null) {
+      _startRadarTracking();
+    }
+  }
+
+  void _startRadarTracking() {
+    final interval = _radarTrackingIntervalForState;
+    if (_radarTrackingTimer != null &&
+        _activeRadarTrackingInterval == interval) {
+      return;
+    }
+
+    _radarTrackingTimer?.cancel();
+    _activeRadarTrackingInterval = interval;
+    _radarTrackingTimer = Timer.periodic(interval, (_) {
+      if (mounted) {
+        unawaited(_refreshRadarLocation(quiet: true));
+      }
+    });
+  }
+
+  void _restartRadarTrackingIfActive() {
+    if (_radarTrackingTimer == null) {
+      return;
+    }
+    _startRadarTracking();
+  }
+
+  Duration get _radarTrackingIntervalForState {
+    if (!_appInForeground) {
+      return _radarBackgroundTrackingInterval;
+    }
+    if (_radarNeedsActiveLocation) {
+      return _radarActiveTrackingInterval;
+    }
+    return _radarPassiveTrackingInterval;
+  }
+
+  Duration get _radarLocationCacheMaxAgeForState {
+    if (!_appInForeground) {
+      return _radarBackgroundLocationCacheMaxAge;
+    }
+    if (_radarNeedsActiveLocation) {
+      return _radarActiveLocationCacheMaxAge;
+    }
+    return _radarPassiveLocationCacheMaxAge;
+  }
+
+  Future<DeviceLocation?> _refreshRadarLocation({
+    bool quiet = false,
+    bool force = false,
+  }) async {
+    if (_radarTrackingBusy) {
+      return null;
+    }
+
+    final now = DateTime.now();
+    final lastRefreshAt = _lastRadarLocationRefreshAt;
+    if (!force &&
+        lastRefreshAt != null &&
+        now.difference(lastRefreshAt) <
+            Duration(
+              microseconds: _radarTrackingIntervalForState.inMicroseconds ~/ 2,
+            )) {
+      return _mesh.myLocation;
+    }
+
+    _radarTrackingBusy = true;
+    _lastRadarLocationRefreshAt = now;
+    try {
+      final location = await _radar.locate(
+        _mesh.identityName,
+        quiet: quiet,
+        lowPower: quiet && !_radarNeedsActiveLocation,
+        maxCacheAge: force ? Duration.zero : _radarLocationCacheMaxAgeForState,
+      );
+      if (location != null &&
+          _shouldReplaceLocation(_mesh.myLocation, location)) {
+        _mesh.updateLocation(location);
+      }
+      return location;
+    } finally {
+      _radarTrackingBusy = false;
+    }
+  }
+
+  void _scrollMessagesToEnd() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_messagesScrollController.hasClients) {
+        return;
+      }
+
+      _messagesScrollController.animateTo(
+        _messagesScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  void _quoteContactNameForChat(String contactName) {
+    final mention = '@$contactName ';
+    final currentText = _messageController.text;
+    final separator =
+        currentText.isEmpty || RegExp(r'\s$').hasMatch(currentText) ? '' : ' ';
+    final nextText = '$currentText$separator$mention';
+
+    _messageController.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextText.length),
+    );
+    _tabController.animateTo(1);
+    _scrollMessagesToEnd();
+  }
+
+  void _openFeatureGuide() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.88;
+
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: const _FeatureGuideSheet(),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _togglePropagationLight() async {
+    final wasRunning = _mesh.isRunning;
+
+    if (wasRunning) {
+      await _mesh.stop();
+    } else {
+      unawaited(_backgroundMesh.requestNotificationPermission());
+      await _mesh.start();
+    }
+    unawaited(_syncBackgroundMeshState());
+
+    if (!mounted) {
+      return;
+    }
+
+    final message = wasRunning
+        ? '傳播光已關閉。'
+        : _mesh.isRunning
+        ? '傳播光已開啟。${_mesh.status}'
+        : '傳播光未能開啟。${_mesh.status}';
+    await _showPropagationLightPopup(
+      title: wasRunning
+          ? '光之網絡已關閉'
+          : _mesh.isRunning
+          ? '光之網絡已開啟'
+          : '光之網絡未能開啟',
+      message: message,
+      active: !wasRunning && _mesh.isRunning,
+    );
+  }
+
+  Future<void> _showPropagationLightPopup({
+    required String title,
+    required String message,
+    required bool active,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final color = active
+            ? const Color(0xFF0D7C66)
+            : const Color(0xFFC4512C);
+        final icon = active ? Icons.hub : Icons.portable_wifi_off;
+        final isFailure = title.contains('未能');
+        const offlineHint = '離線使用時，請先開啟 WiFi，並連接同一個 WiFi、手機熱點或 mesh LAN。';
+        final content = isFailure
+            ? '$message\n\n$offlineHint\n\n如仍未能接上離線網絡，請先重啟 APP；若仍未恢復，再關閉並重新開啟光之網絡。'
+            : active
+            ? '$message\n\n$offlineHint'
+            : message;
+
+        return AlertDialog(
+          title: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: LocalizedText(title)),
+            ],
+          ),
+          content: LocalizedText(content),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const LocalizedText('知道'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([_mesh, _wifiMesh, _radar]),
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(
+            toolbarHeight: 86,
+            title: _AppHeaderTitle(
+              displayName: _mesh.displayName,
+              userName: _mesh.userName,
+              onOpenAccountPrivacy: _openAccountPrivacyCenter,
+            ),
+            actions: [
+              const _LanguageMenu(),
+              IconButton(
+                tooltip: _mesh.isRunning
+                    ? _tr(context, 'Stop node', '停止節點', '停止节点')
+                    : _mesh.networkMode == MeshNetworkMode.online
+                    ? _tr(
+                        context,
+                        'Start online light network',
+                        '啟動線上光網',
+                        '启动在线光网',
+                      )
+                    : _tr(context, 'Start offline node', '啟動離線節點', '启动离线节点'),
+                onPressed: () => unawaited(_togglePropagationLight()),
+                icon: Icon(
+                  _mesh.isRunning
+                      ? Icons.power_settings_new
+                      : _mesh.networkMode == MeshNetworkMode.online
+                      ? Icons.public
+                      : Icons.wifi,
+                ),
+              ),
+              IconButton(
+                tooltip: _tr(context, 'Feature guide', '功能介紹', '功能介绍'),
+                onPressed: _openFeatureGuide,
+                icon: const Icon(Icons.info_outline),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: _SosLightButton(controller: _sosLight),
+              ),
+            ],
+            bottom: TabBar(
+              controller: _tabController,
+              tabs: [
+                Tab(
+                  icon: const Icon(Icons.hub_outlined),
+                  text: _tr(context, 'Network', '光之網絡', '光之网络'),
+                ),
+                Tab(
+                  icon: const Icon(Icons.forum_outlined),
+                  text: _tr(context, 'Channel', '光之通道', '光之通道'),
+                ),
+                Tab(
+                  icon: const Icon(Icons.radar),
+                  text: _tr(context, 'Radar', '光之雷達', '光之雷达'),
+                ),
+                Tab(
+                  icon: const Icon(Icons.public),
+                  text: _tr(context, 'Community', '社區資訊', '社区资讯'),
+                ),
+              ],
+            ),
+          ),
+          body: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNetworkWide = constraints.maxWidth >= 860;
+                final sidePanel = _StatusAndPeersPanel(
+                  mesh: _mesh,
+                  onEditUserName: () => unawaited(_editUserName()),
+                );
+                final wifiPanel = _WifiMeshPanel(
+                  controller: _wifiMesh,
+                  onNetworkReady: _wakeMeshAfterWifiReady,
+                  onPeerReady: _wakeMeshAfterPeerReady,
+                  scrollInternally: isNetworkWide,
+                );
+                final chatPanel = _ChatPanel(
+                  mesh: _mesh,
+                  messageController: _messageController,
+                  scrollController: _messagesScrollController,
+                  onSend: _sendMessage,
+                  onCreateRoom: _createRoom,
+                  onCreateHelpRequest: _createHelpRequest,
+                  onShareSupply: _shareSupply,
+                  onQuoteUserName: _quoteContactNameForChat,
+                  onEditUserName: () => unawaited(_editUserName()),
+                  onOpenSafetyCenter: _openChatSafetyCenter,
+                  onReportMessage: _reportMessage,
+                  onBlockUser: _blockUser,
+                  onDeleteMessage: _deleteMessageFromFeed,
+                  onReportUser: _reportUser,
+                );
+                final radarPanel = _LightRadarPanel(
+                  mesh: _mesh,
+                  radar: _radar,
+                  enableWebView: widget.enableWebView,
+                  onLocate: () => unawaited(_locateRadar(force: true)),
+                  onQuoteContactName: _quoteContactNameForChat,
+                  onEditUserName: () => unawaited(_editUserName()),
+                );
+
+                return TabBarView(
+                  controller: _tabController,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    _NetworkTabPage(
+                      sidePanel: sidePanel,
+                      bridgePanel: _mesh.networkMode == MeshNetworkMode.online
+                          ? _NetworkBridgePanel(mesh: _mesh)
+                          : null,
+                      wifiPanel: _mesh.networkMode == MeshNetworkMode.online
+                          ? null
+                          : wifiPanel,
+                      maxWidth: constraints.maxWidth,
+                    ),
+                    _ChatTabPage(chatPanel: chatPanel),
+                    _RadarTabPage(radarPanel: radarPanel),
+                    _CommunityInfoTabPage(enableNews: widget.enableWebView),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LanguageMenu extends StatelessWidget {
+  const _LanguageMenu();
+
+  @override
+  Widget build(BuildContext context) {
+    final scope = _AppLanguageScope.of(context);
+    return PopupMenuButton<AppLanguage>(
+      key: const ValueKey('language-menu'),
+      initialValue: scope.language,
+      tooltip: _tr(context, 'Language', '語言', '语言'),
+      constraints: const BoxConstraints(minWidth: 240, maxWidth: 320),
+      onSelected: scope.onChanged,
+      icon: const Icon(Icons.language),
+      itemBuilder: (context) => AppLanguage.values
+          .map(
+            (language) => PopupMenuItem<AppLanguage>(
+              value: language,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 24,
+                    child: language == scope.language
+                        ? const Icon(Icons.check, size: 18)
+                        : null,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: material.Text(
+                      language.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _AppHeaderTitle extends StatelessWidget {
+  const _AppHeaderTitle({
+    required this.displayName,
+    required this.userName,
+    required this.onOpenAccountPrivacy,
+  });
+
+  final String displayName;
+  final String userName;
+  final VoidCallback onOpenAccountPrivacy;
+
+  @override
+  Widget build(BuildContext context) {
+    final identityName = MeshChatService._identityName(
+      userName: userName,
+      displayName: displayName,
+    );
+
+    return LocalizedTooltip(
+      message:
+          '${_tr(context, 'Account & privacy · Light ID', '帳號與私隱 · 光之身份證', '账号与隐私 · 光之身份证')} · $identityName',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const ValueKey('account-privacy-entry'),
+          borderRadius: BorderRadius.circular(8),
+          onTap: onOpenAccountPrivacy,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Container(
+              width: 190,
+              height: 62,
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FBF7),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFC9D9CF)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x1A0D7C66),
+                    blurRadius: 8,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: double.infinity,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE0F2E9),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFBFD9CE)),
+                    ),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.person_pin_circle_outlined,
+                          size: 24,
+                          color: Color(0xFF0D7C66),
+                        ),
+                        SizedBox(height: 1),
+                        LocalizedText(
+                          'ID',
+                          style: TextStyle(
+                            color: Color(0xFF0D7C66),
+                            fontSize: 8,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: LocalizedText(
+                                _tr(context, 'Propagation Light', '傳播光', '传播光'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Color(0xFF17211E),
+                                  fontSize: 12,
+                                  height: 1,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 0,
+                                ),
+                              ),
+                            ),
+                            SizedBox(width: 5),
+                          ],
+                        ),
+                        LocalizedText(
+                          _tr(context, 'Light ID', '光之身份證', '光之身份证'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Color(0xFF566B60),
+                            fontSize: 8.5,
+                            height: 1,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        LocalizedText(
+                          userName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF0D4F43),
+                            fontSize: 13,
+                            height: 1,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                        LocalizedText(
+                          displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF345B58),
+                            fontSize: 11,
+                            height: 1,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NetworkTabPage extends StatelessWidget {
+  const _NetworkTabPage({
+    required this.sidePanel,
+    required this.bridgePanel,
+    this.wifiPanel,
+    required this.maxWidth,
+  });
+
+  final Widget sidePanel;
+  final Widget? bridgePanel;
+  final Widget? wifiPanel;
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final isWide = maxWidth >= 860;
+
+    if (isWide) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: Column(
+          children: [
+            const _NetworkSupportRow(),
+            const SizedBox(height: 10),
+            Expanded(
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 340,
+                    child: ListView(
+                      children: [
+                        sidePanel,
+                        if (bridgePanel != null) ...[
+                          const SizedBox(height: 12),
+                          bridgePanel!,
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (wifiPanel != null) ...[
+                    const SizedBox(width: 16),
+                    Expanded(child: wifiPanel!),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+      child: ListView(
+        children: [
+          const _NetworkSupportRow(),
+          const SizedBox(height: 12),
+          sidePanel,
+          if (bridgePanel != null) ...[
+            const SizedBox(height: 12),
+            bridgePanel!,
+          ],
+          if (wifiPanel != null) ...[const SizedBox(height: 12), wifiPanel!],
+        ],
+      ),
+    );
+  }
+}
+
+class _NetworkSupportRow extends StatelessWidget {
+  const _NetworkSupportRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final language = _AppLanguageScope.of(context).language;
+    return Card(
+      key: const ValueKey('network-user-support'),
+      child: SizedBox(
+        height: 58,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              const Icon(Icons.support_agent, color: Color(0xFF0D7C66)),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: LocalizedText(
+                  '用戶支援',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+              IconButton.filledTonal(
+                key: const ValueKey('whatsapp-support-button'),
+                tooltip: _localizedUiText('WhatsApp 查詢', language: language),
+                onPressed: () =>
+                    unawaited(_openExternalUrl(context, whatsAppSupportUrl)),
+                icon: const FaIcon(
+                  FontAwesomeIcons.whatsapp,
+                  color: Color(0xFF25D366),
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton.filledTonal(
+                key: const ValueKey('line-support-button'),
+                tooltip: _localizedUiText('LINE 聯絡', language: language),
+                onPressed: () =>
+                    unawaited(_openExternalUrl(context, lineSupportUrl)),
+                icon: const FaIcon(
+                  FontAwesomeIcons.line,
+                  color: Color(0xFF06C755),
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton.filledTonal(
+                key: const ValueKey('qq-channel-button'),
+                tooltip: _localizedUiText('QQ 頻道', language: language),
+                onPressed: () =>
+                    unawaited(_openExternalUrl(context, qqChannelUrl)),
+                icon: const FaIcon(
+                  FontAwesomeIcons.qq,
+                  color: Color(0xFF1479D7),
+                  size: 22,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatTabPage extends StatelessWidget {
+  const _ChatTabPage({required this.chatPanel});
+
+  final Widget chatPanel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: chatPanel,
+    );
+  }
+}
+
+class _RadarTabPage extends StatelessWidget {
+  const _RadarTabPage({required this.radarPanel});
+
+  final Widget radarPanel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: radarPanel,
+    );
+  }
+}
+
+const double _communityInfoMaxWidth = 760;
+const Color _communityInfoInk = Color(0xFF17211E);
+const Color _communityInfoMuted = Color(0xFF566B60);
+const Color _communityInfoBorder = Color(0xFFE0E5DE);
+
+class _CommunityInfoTabPage extends StatelessWidget {
+  const _CommunityInfoTabPage({this.enableNews = true});
+
+  final bool enableNews;
+
+  static const _aedMapUrl =
+      'https://www.google.com/maps/d/u/0/viewer?mid=1ufgVocWH6anSLW3jvn6ic5UOq5034WPW';
+  static const _lightMeshTutorialUrl =
+      'https://www.youtube.com/watch?v=q94Pgn1gSVc';
+
+  Future<void> _openAedMap(BuildContext context) {
+    return _openExternalUrl(context, _aedMapUrl);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 720;
+        final horizontalPadding = isWide ? 18.0 : 12.0;
+
+        return ListView(
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            isWide ? 14 : 10,
+            horizontalPadding,
+            20,
+          ),
+          children: [
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: _communityInfoMaxWidth,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const _CommunityInfoHeader(),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      key: const ValueKey('light-mesh-tutorial-button'),
+                      onPressed: () => unawaited(
+                        _openExternalUrl(context, _lightMeshTutorialUrl),
+                      ),
+                      icon: const Icon(Icons.play_circle_outline, size: 20),
+                      label: const LocalizedText('光網連接教學影片'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF0D7C66),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 44),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const _CommunityLinkGrid(),
+                    const SizedBox(height: 10),
+                    if (enableNews) ...[
+                      const _CommunityNewsSection(),
+                      const SizedBox(height: 10),
+                    ],
+                    const _CommunityInfoHighlights(),
+                    const SizedBox(height: 10),
+                    _InfoCard(
+                      icon: Icons.phone_in_talk,
+                      color: const Color(0xFFB71C1C),
+                      title: '緊急電話',
+                      rows: const [
+                        ('999', '生命危險、火警、救護、即時罪案'),
+                        ('18222', '防騙易熱線，懷疑受騙可先查詢'),
+                        ('HKSOS', '有智能電話者可使用警方 HKSOS 求助'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.checklist_rtl,
+                      color: const Color(0xFFE65100),
+                      title: '先做三件事',
+                      rows: const [
+                        ('1', '危急、昏迷、胸痛、嚴重出血：即打 999。'),
+                        ('2', '說清楚位置：屋邨、座數、樓層、附近地標、出口。'),
+                        ('3', '安排一人落樓或到路口等救護，另一人留守照顧傷者。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.local_hospital,
+                      color: const Color(0xFF1565C0),
+                      title: '黃大仙附近醫療點',
+                      rows: const [
+                        ('聖母醫院', '黃大仙沙田坳道 118 號；附近醫療點'),
+                        ('黃大仙醫院', '黃大仙沙田坳道 124 號；附近醫療點'),
+                        ('聯合醫院', '觀塘協和街 130 號；有急症室'),
+                        ('伊利沙伯醫院', '九龍加士居道 30 號；有急症室'),
+                        ('消防及救護', '999 報案中心統一調派'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.map_outlined,
+                      color: const Color(0xFF2E7D32),
+                      title: '離線地圖記法',
+                      rows: const [
+                        ('', '先寫低最近港鐵出口、巴士站、屋邨入口、商場或學校。'),
+                        ('', '電梯停用時，記低可行樓梯、平台、斜路和避雨位置。'),
+                        ('', '如無網絡，用紙條或光網轉發「地點 + 需要 + 聯絡方式」。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.local_fire_department,
+                      color: const Color(0xFFC62828),
+                      title: '火災自救常識',
+                      rows: const [
+                        ('', '見火警或聞到濃煙：即打 999，叫醒附近人士，關門阻煙。'),
+                        ('', '逃生時沿樓梯落樓，不乘升降機；濃煙下蹲低，用濕毛巾掩口鼻。'),
+                        ('', '門柄發熱或門外有煙，不要開門；用濕毛巾封門縫，在窗口或露台求救。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.water,
+                      color: const Color(0xFF01579B),
+                      title: '水災 / 暴雨自救',
+                      rows: const [
+                        ('', '遠離河道、斜坡、地下商場、停車場、隧道和已浸水路段。'),
+                        ('', '不要涉水或駕車穿過積水；水流可沖走人和車，亦可能有漏電風險。'),
+                        ('', '把證件、藥物、電話、充電器放入防水袋，移到較高及穩固位置。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.vibration,
+                      color: const Color(0xFF4E342E),
+                      title: '地震自救常識',
+                      rows: const [
+                        ('室內', '立即蹲下、掩護頭頸、抓穩枱腳或堅固家具，遠離玻璃和吊櫃。'),
+                        ('室外', '遠離外牆、招牌、玻璃幕牆、電線桿和天橋，留在空曠地方。'),
+                        ('震後', '檢查煤氣、火種和傷者；不要急用電梯，留意餘震。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.bolt,
+                      color: const Color(0xFFF57F17),
+                      title: '大停電集合 / 充電',
+                      rows: const [
+                        (
+                          '太陽能點',
+                          '黃大仙廟正門前大空地。社區預設集合及充電支援點，可擺放太陽能板、流動電源、光網節點和紙本告示。',
+                        ),
+                        (
+                          '取物資點',
+                          '黃大仙廟正門前大空地。優先派發飲用水、電筒、電池、尿片、簡單糧食、充電線和基本急救物資。',
+                        ),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.people_alt_outlined,
+                      color: const Color(0xFF00695C),
+                      title: '社區互助資料',
+                      rows: const [
+                        ('', '可登記飲用水、尿片、充電寶、輪椅、拐杖等物資。'),
+                        ('', '取物資點：黃大仙廟正門前大空地；請優先照顧長者、幼兒、病患者和行動不便人士。'),
+                        ('', '長者或不會用 APP 的街坊，可請家人、鄰里或店員代查。'),
+                      ],
+                    ),
+                    _InfoCard(
+                      icon: Icons.favorite,
+                      color: const Color(0xFF880E4F),
+                      title: 'AED（自動心臟除顫器）使用提醒',
+                      rows: const [
+                        (
+                          '重要',
+                          'AED 應由持有效急救證書或完成 AED / CPR 訓練人士優先使用；其他人協助打 999、取 AED 及引導救護員。',
+                        ),
+                        ('', '有人突然昏迷、無呼吸或疑似心臟驟停：即打 999 並派人取 AED。'),
+                        ('', '開機後跟語音指示貼電極片；未聽到指示前不要觸碰傷者。'),
+                        ('', '繼續心外壓，直到救護員到場、傷者恢復或現場不安全。'),
+                      ],
+                      action: FilledButton.icon(
+                        onPressed: () => unawaited(_openAedMap(context)),
+                        icon: const Icon(Icons.pin_drop_outlined, size: 18),
+                        label: const LocalizedText('AED 地圖'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF880E4F),
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(0, 40),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _CommunityInfoHeader extends StatelessWidget {
+  const _CommunityInfoHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF123E35),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x140D4F43),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: const Icon(
+                Icons.health_and_safety_outlined,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LocalizedText(
+                    '黃大仙離線互助及災害自救資料',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  LocalizedText(
+                    '給網絡中斷、長者或需要紙本指引時使用。生命危險、火警、昏迷、胸痛、嚴重出血，先致電 999。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFFE5F2EE),
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CommunityLinkGrid extends StatelessWidget {
+  const _CommunityLinkGrid();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      height: 96,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _CommunityLinkTile(
+              icon: Icons.volunteer_activism_outlined,
+              color: Color(0xFFB71C1C),
+              title: '社區救生圈',
+              body: '互助求援',
+              url: _communityLifebuoyUrl,
+            ),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            child: _CommunityLinkTile(
+              icon: Icons.forum_outlined,
+              color: Color(0xFF00695C),
+              title: '社區共鳴牆',
+              body: '街坊留言',
+              url: _communityWallUrl,
+            ),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            child: _CommunityLinkTile(
+              icon: Icons.map_outlined,
+              color: Color(0xFF1565C0),
+              title: '守望地圖',
+              body: '分享狀況',
+              url: _communityShareUrl,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommunityLinkTile extends StatelessWidget {
+  const _CommunityLinkTile({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.body,
+    required this.url,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String body;
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: const BorderSide(color: _communityInfoBorder),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => unawaited(_openExternalUrl(context, url)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(height: 7),
+              LocalizedText(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: _communityInfoInk,
+                  fontWeight: FontWeight.w900,
+                  height: 1.12,
+                ),
+              ),
+              const SizedBox(height: 2),
+              LocalizedText(
+                body,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: _communityInfoMuted,
+                  height: 1.15,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommunityNewsSection extends StatefulWidget {
+  const _CommunityNewsSection();
+
+  @override
+  State<_CommunityNewsSection> createState() => _CommunityNewsSectionState();
+}
+
+class _CommunityNewsSectionState extends State<_CommunityNewsSection> {
+  final _repository = const _CommunityNewsRepository();
+  late Future<List<_CommunityNewsItem>> _future = _repository.fetchLatest();
+  var _page = 0;
+
+  void _refresh() {
+    setState(() {
+      _page = 0;
+      _future = _repository.fetchLatest();
+    });
+  }
+
+  void _openArticle(_CommunityNewsItem item) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _CommunityNewsArticlePage(item: item),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _communityInfoBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F17211E),
+            blurRadius: 10,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D7C66).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.newspaper_outlined,
+                    color: Color(0xFF0D7C66),
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: LocalizedText(
+                    '社區最新消息',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: _communityInfoInk,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: _localizedUiText('重新整理'),
+                  onPressed: _refresh,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            FutureBuilder<List<_CommunityNewsItem>>(
+              future: _future,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 18),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                if (snapshot.hasError) {
+                  return _CommunityNewsMessage(
+                    icon: Icons.cloud_off_outlined,
+                    message: _communityNewsErrorMessage(snapshot.error),
+                  );
+                }
+
+                final items = snapshot.data ?? const <_CommunityNewsItem>[];
+                if (items.isEmpty) {
+                  return const _CommunityNewsMessage(
+                    icon: Icons.article_outlined,
+                    message: '暫時未有社區消息。',
+                  );
+                }
+
+                final pageCount = max(
+                  1,
+                  (items.length / _communityNewsPageSize).ceil(),
+                );
+                final page = _page.clamp(0, pageCount - 1).toInt();
+                final start = page * _communityNewsPageSize;
+                final pageItems = items
+                    .skip(start)
+                    .take(_communityNewsPageSize)
+                    .toList();
+
+                return Column(
+                  children: [
+                    for (var index = 0; index < pageItems.length; index += 1)
+                      _CommunityNewsTile(
+                        item: pageItems[index],
+                        onTap: () => _openArticle(pageItems[index]),
+                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        LocalizedText(
+                          '第 ${page + 1} / $pageCount 頁 · ${items.length} 條',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: _communityInfoMuted),
+                        ),
+                        const Spacer(),
+                        IconButton.outlined(
+                          tooltip: _localizedUiText('上一頁'),
+                          onPressed: page == 0
+                              ? null
+                              : () => setState(() => _page = page - 1),
+                          icon: const Icon(Icons.chevron_left),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.outlined(
+                          tooltip: _localizedUiText('下一頁'),
+                          onPressed: page >= pageCount - 1
+                              ? null
+                              : () => setState(() => _page = page + 1),
+                          icon: const Icon(Icons.chevron_right),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CommunityNewsMessage extends StatelessWidget {
+  const _CommunityNewsMessage({required this.icon, required this.message});
+
+  final IconData icon;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFBF7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _communityInfoBorder),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: _communityInfoMuted, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: LocalizedText(
+              message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: _communityInfoMuted,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommunityNewsTile extends StatelessWidget {
+  const _CommunityNewsTile({required this.item, required this.onTap});
+
+  final _CommunityNewsItem item;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE0F2E9),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.article_outlined,
+                  color: Color(0xFF0D7C66),
+                  size: 19,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LocalizedText(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: _communityInfoInk,
+                        fontWeight: FontWeight.w800,
+                        height: 1.22,
+                      ),
+                    ),
+                    if (item.summary.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      LocalizedText(
+                        item.summary,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: _communityInfoMuted,
+                          height: 1.28,
+                        ),
+                      ),
+                    ],
+                    if (item.dateLabel.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      LocalizedText(
+                        item.dateLabel,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: const Color(0xFF7A8A82),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right,
+                color: _communityInfoMuted,
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommunityNewsArticlePage extends StatefulWidget {
+  const _CommunityNewsArticlePage({required this.item});
+
+  final _CommunityNewsItem item;
+
+  @override
+  State<_CommunityNewsArticlePage> createState() =>
+      _CommunityNewsArticlePageState();
+}
+
+class _CommunityNewsArticlePageState extends State<_CommunityNewsArticlePage> {
+  final _repository = const _CommunityNewsRepository();
+  late Future<_CommunityNewsArticle> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _fetchArticle();
+  }
+
+  Future<_CommunityNewsArticle> _fetchArticle() {
+    return _repository.fetchArticle(widget.item.slug, fallback: widget.item);
+  }
+
+  void _retry() {
+    setState(() {
+      _future = _fetchArticle();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: LocalizedText(widget.item.title)),
+      body: FutureBuilder<_CommunityNewsArticle>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.cloud_off_outlined,
+                      color: _communityInfoMuted,
+                      size: 34,
+                    ),
+                    const SizedBox(height: 10),
+                    LocalizedText(
+                      _communityNewsErrorMessage(snapshot.error),
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: _communityInfoMuted,
+                        height: 1.38,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    FilledButton.icon(
+                      onPressed: _retry,
+                      icon: const Icon(Icons.refresh),
+                      label: const LocalizedText('重試'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          final article = snapshot.data;
+          if (article == null) {
+            return const Center(child: LocalizedText('未能讀取文章。'));
+          }
+          return _CommunityNewsArticleWebView(article: article);
+        },
+      ),
+    );
+  }
+}
+
+class _CommunityNewsArticleWebView extends StatefulWidget {
+  const _CommunityNewsArticleWebView({required this.article});
+
+  final _CommunityNewsArticle article;
+
+  @override
+  State<_CommunityNewsArticleWebView> createState() =>
+      _CommunityNewsArticleWebViewState();
+}
+
+class _CommunityNewsArticleWebViewState
+    extends State<_CommunityNewsArticleWebView> {
+  late final WebViewController _controller;
+  var _progress = 0;
+  var _htmlLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.disabled)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onProgress: (progress) {
+            if (mounted) {
+              setState(() => _progress = progress);
+            }
+          },
+          onPageFinished: (_) {
+            if (mounted) {
+              setState(() {
+                _htmlLoaded = true;
+                _progress = 100;
+              });
+            }
+          },
+          onNavigationRequest: (request) {
+            final uri = Uri.tryParse(request.url);
+            if (_htmlLoaded &&
+                request.isMainFrame &&
+                uri != null &&
+                _isExternalHttpUrl(uri)) {
+              unawaited(_openExternalUrl(context, request.url));
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
+      ..loadHtmlString(
+        _communityNewsDocument(widget.article),
+        baseUrl: _aiecoWebUrl,
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned.fill(child: WebViewWidget(controller: _controller)),
+        if (_progress < 100)
+          Positioned(
+            left: 0,
+            top: 0,
+            right: 0,
+            child: LinearProgressIndicator(
+              value: _progress == 0 ? null : _progress / 100,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _CommunityNewsRepository {
+  const _CommunityNewsRepository();
+
+  Future<List<_CommunityNewsItem>> fetchLatest() async {
+    final uri = Uri.https(_communityNewsHost, _communityNewsApiPath, {
+      'category': _communityNewsCategory,
+      'limit': _communityNewsLimit.toString(),
+      'page': '1',
+    });
+    final decoded = await _getJson(uri);
+    final rows = _extractList(decoded);
+    final items =
+        rows
+            .whereType<Map<dynamic, dynamic>>()
+            .map(_CommunityNewsItem.fromMap)
+            .where((item) => item.slug.isNotEmpty && item.title.isNotEmpty)
+            .toList()
+          ..sort(_sortCommunityNews);
+    return items.take(_communityNewsLimit).toList();
+  }
+
+  Future<_CommunityNewsArticle> fetchArticle(
+    String slug, {
+    required _CommunityNewsItem fallback,
+  }) async {
+    final uri = Uri(
+      scheme: 'https',
+      host: _communityNewsHost,
+      pathSegments: const ['api', 'blogs'] + [slug],
+    );
+    final decoded = await _getJson(uri);
+    final map = _extractMap(decoded);
+    return _CommunityNewsArticle.fromMap(map, fallback: fallback);
+  }
+
+  Future<Object?> _getJson(Uri uri) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 12));
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      final response = await request.close().timeout(
+        const Duration(seconds: 18),
+      );
+      final body = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(seconds: 18));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw _CommunityNewsException(
+          '最新消息暫時未能讀取（HTTP ${response.statusCode}）。',
+        );
+      }
+      return jsonDecode(body);
+    } on TimeoutException {
+      throw const _CommunityNewsException('連線逾時，請稍後再試。');
+    } on SocketException {
+      throw const _CommunityNewsException('未能連接社區資訊伺服器。');
+    } on FormatException {
+      throw const _CommunityNewsException('社區資訊格式暫時未能讀取。');
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+class _CommunityNewsItem {
+  const _CommunityNewsItem({
+    required this.slug,
+    required this.title,
+    required this.summary,
+    required this.publishedAt,
+  });
+
+  factory _CommunityNewsItem.fromMap(Map raw) {
+    final map = _stringMap(raw);
+    final title =
+        _readCommunityString(map, const [
+          'title',
+          'name',
+          'headline',
+          'subject',
+        ]) ??
+        '';
+    final summarySource = _readCommunityString(map, const [
+      'excerpt',
+      'summary',
+      'description',
+      'intro',
+      'metaDescription',
+      'content',
+      'body',
+    ]);
+
+    return _CommunityNewsItem(
+      slug: _readCommunityString(map, const ['slug', 'id']) ?? '',
+      title: title,
+      summary: _stripHtml(summarySource ?? ''),
+      publishedAt: _readCommunityDate(map),
+    );
+  }
+
+  final String slug;
+  final String title;
+  final String summary;
+  final DateTime? publishedAt;
+
+  String get dateLabel => publishedAt == null
+      ? ''
+      : _formatCommunityNewsDate(publishedAt!.toLocal());
+}
+
+class _CommunityNewsArticle {
+  const _CommunityNewsArticle({
+    required this.slug,
+    required this.title,
+    required this.summary,
+    required this.html,
+    required this.publishedAt,
+  });
+
+  factory _CommunityNewsArticle.fromMap(
+    Map<String, Object?> map, {
+    required _CommunityNewsItem fallback,
+  }) {
+    final title =
+        _readCommunityString(map, const ['title', 'name', 'headline']) ??
+        fallback.title;
+    final summary = _stripHtml(
+      _readCommunityString(map, const [
+            'excerpt',
+            'summary',
+            'description',
+            'intro',
+          ]) ??
+          fallback.summary,
+    );
+    final html =
+        _readCommunityString(map, const [
+          'contentHtml',
+          'html',
+          'bodyHtml',
+          'content',
+          'body',
+          'description',
+        ]) ??
+        summary;
+
+    return _CommunityNewsArticle(
+      slug: _readCommunityString(map, const ['slug', 'id']) ?? fallback.slug,
+      title: title,
+      summary: summary,
+      html: html,
+      publishedAt: _readCommunityDate(map) ?? fallback.publishedAt,
+    );
+  }
+
+  final String slug;
+  final String title;
+  final String summary;
+  final String html;
+  final DateTime? publishedAt;
+}
+
+class _CommunityNewsException implements Exception {
+  const _CommunityNewsException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+List<Object?> _extractList(Object? decoded) {
+  if (decoded is List) {
+    return decoded.cast<Object?>();
+  }
+  if (decoded is Map) {
+    for (final key in const [
+      'data',
+      'items',
+      'blogs',
+      'posts',
+      'results',
+      'rows',
+      'list',
+    ]) {
+      final value = decoded[key];
+      if (value is List) {
+        return value.cast<Object?>();
+      }
+      if (value is Map) {
+        final nested = _extractList(value);
+        if (nested.isNotEmpty) {
+          return nested;
+        }
+      }
+    }
+  }
+  return const <Object?>[];
+}
+
+Map<String, Object?> _extractMap(Object? decoded) {
+  if (decoded is Map) {
+    for (final key in const ['data', 'blog', 'post', 'item', 'result']) {
+      final value = decoded[key];
+      if (value is Map) {
+        return _stringMap(value);
+      }
+    }
+    return _stringMap(decoded);
+  }
+  return const <String, Object?>{};
+}
+
+Map<String, Object?> _stringMap(Map raw) {
+  final map = <String, Object?>{};
+  for (final entry in raw.entries) {
+    final key = entry.key;
+    if (key is String) {
+      map[key] = entry.value;
+    }
+  }
+  return map;
+}
+
+String? _readCommunityString(Map<String, Object?> map, List<String> keys) {
+  for (final key in keys) {
+    final value = map[key];
+    if (value is String && value.trim().isNotEmpty) {
+      return _decodeHtmlEntities(value.trim());
+    }
+    if (value is num || value is bool) {
+      return value.toString();
+    }
+    if (value is Map) {
+      final nested = _readCommunityString(_stringMap(value), const [
+        'text',
+        'value',
+        'rendered',
+        'html',
+        'url',
+      ]);
+      if (nested != null && nested.isNotEmpty) {
+        return nested;
+      }
+    }
+  }
+  return null;
+}
+
+DateTime? _readCommunityDate(Map<String, Object?> map) {
+  final raw = _readCommunityString(map, const [
+    'publishedAt',
+    'published_at',
+    'publishAt',
+    'createdAt',
+    'created_at',
+    'updatedAt',
+    'updated_at',
+    'date',
+  ]);
+  if (raw == null || raw.isEmpty) {
+    return null;
+  }
+  final fromNumber = num.tryParse(raw);
+  if (fromNumber != null) {
+    final milliseconds = fromNumber > 100000000000
+        ? fromNumber.toInt()
+        : (fromNumber * 1000).toInt();
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds, isUtc: true);
+  }
+  return DateTime.tryParse(raw);
+}
+
+int _sortCommunityNews(_CommunityNewsItem left, _CommunityNewsItem right) {
+  final leftDate = left.publishedAt;
+  final rightDate = right.publishedAt;
+  if (leftDate == null && rightDate == null) {
+    return left.title.compareTo(right.title);
+  }
+  if (leftDate == null) {
+    return 1;
+  }
+  if (rightDate == null) {
+    return -1;
+  }
+  return rightDate.compareTo(leftDate);
+}
+
+String _formatCommunityNewsDate(DateTime time) {
+  final month = time.month.toString().padLeft(2, '0');
+  final day = time.day.toString().padLeft(2, '0');
+  return '${time.year}-$month-$day';
+}
+
+String _communityNewsErrorMessage(Object? error) {
+  if (error is _CommunityNewsException) {
+    return error.message;
+  }
+  return '社區最新消息暫時未能讀取。';
+}
+
+String _stripHtml(String value) {
+  final text = value
+      .replaceAll(
+        RegExp(r'<script[\s\S]*?</script>', caseSensitive: false),
+        ' ',
+      )
+      .replaceAll(RegExp(r'<style[\s\S]*?</style>', caseSensitive: false), ' ')
+      .replaceAll(RegExp(r'<[^>]+>'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return _decodeHtmlEntities(text);
+}
+
+String _decodeHtmlEntities(String value) {
+  return value
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&#x27;', "'");
+}
+
+String _communityNewsDocument(_CommunityNewsArticle article) {
+  final title = const HtmlEscape().convert(article.title);
+  final summary = const HtmlEscape().convert(article.summary);
+  final date = article.publishedAt == null
+      ? ''
+      : _formatCommunityNewsDate(article.publishedAt!.toLocal());
+  final content = _looksLikeHtml(article.html)
+      ? article.html
+      : '<p>${const HtmlEscape().convert(article.html).replaceAll('\n', '<br>')}</p>';
+
+  return '''
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f7f8f4;
+      color: #17211e;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+    }
+    article {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 20px 16px 34px;
+      background: #ffffff;
+      min-height: 100vh;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.24;
+      letter-spacing: 0;
+    }
+    .meta {
+      color: #66756d;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+    .summary {
+      margin: 0 0 18px;
+      padding: 12px;
+      border-left: 4px solid #0d7c66;
+      background: #eef7f2;
+      color: #355248;
+      border-radius: 0 8px 8px 0;
+    }
+    img, video, iframe {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+    a { color: #0b6f5b; font-weight: 700; }
+    p { margin: 0 0 1em; }
+    ul, ol { padding-left: 1.35em; }
+    blockquote {
+      margin: 1em 0;
+      padding: 0.8em 1em;
+      border-left: 4px solid #d7ded7;
+      color: #566b60;
+      background: #fafbf7;
+    }
+  </style>
+</head>
+<body>
+  <article>
+    <h1>$title</h1>
+    ${date.isEmpty ? '' : '<div class="meta">$date</div>'}
+    ${summary.isEmpty ? '' : '<div class="summary">$summary</div>'}
+    $content
+  </article>
+</body>
+</html>
+''';
+}
+
+bool _looksLikeHtml(String value) {
+  return RegExp(r'<[a-z][\s\S]*>', caseSensitive: false).hasMatch(value);
+}
+
+class _CommunityInfoHighlights extends StatelessWidget {
+  const _CommunityInfoHighlights();
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : _communityInfoMaxWidth;
+        final isWide = maxWidth >= 620;
+        final tileWidth = isWide ? (maxWidth - 16) / 3 : maxWidth;
+
+        return Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            SizedBox(
+              width: tileWidth,
+              child: const _CommunityHighlightTile(
+                icon: Icons.call,
+                color: Color(0xFFB71C1C),
+                title: '999',
+                body: '危急、火警、救護',
+              ),
+            ),
+            SizedBox(
+              width: tileWidth,
+              child: const _CommunityHighlightTile(
+                icon: Icons.favorite,
+                color: Color(0xFF880E4F),
+                title: 'AED',
+                body: '昏迷無呼吸即派人取',
+              ),
+            ),
+            SizedBox(
+              width: tileWidth,
+              child: const _CommunityHighlightTile(
+                icon: Icons.solar_power_outlined,
+                color: Color(0xFFF57F17),
+                title: '黃大仙廟',
+                body: '集合、充電、取物資',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _CommunityHighlightTile extends StatelessWidget {
+  const _CommunityHighlightTile({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.body,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _communityInfoBorder),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LocalizedText(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: _communityInfoInk,
+                      fontWeight: FontWeight.w900,
+                      height: 1.15,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  LocalizedText(
+                    body,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: _communityInfoMuted,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCard extends StatelessWidget {
+  const _InfoCard({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.rows,
+    this.action,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final List<(String, String)> rows;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _communityInfoBorder),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0F17211E),
+              blurRadius: 10,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: color.withValues(alpha: 0.22)),
+                    ),
+                    child: Icon(icon, color: color, size: 22),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 7),
+                      child: LocalizedText(
+                        title,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: _communityInfoInk,
+                          fontWeight: FontWeight.w900,
+                          height: 1.15,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              for (var index = 0; index < rows.length; index += 1) ...[
+                _InfoCardRow(row: rows[index], color: color),
+                if (index != rows.length - 1) const SizedBox(height: 9),
+              ],
+              if (action != null) ...[
+                const SizedBox(height: 12),
+                Align(alignment: Alignment.centerLeft, child: action!),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCardRow extends StatelessWidget {
+  const _InfoCardRow({required this.row, required this.color});
+
+  final (String, String) row;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = row.$1.trim();
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (label.isEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: SizedBox.square(
+              dimension: 6,
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+        ] else ...[
+          SizedBox(
+            width: 88,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.09),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                child: LocalizedText(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w900,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+        ],
+        Expanded(
+          child: LocalizedText(
+            row.$2,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: _communityInfoMuted,
+              height: 1.38,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+const List<String> _moderationReportReasons = [
+  '色情、裸露或性騷擾',
+  '仇恨、騷擾、欺凌或人身攻擊',
+  '暴力威脅、恐嚇或危險行為',
+  '詐騙、垃圾訊息、賭博或非法交易',
+  '個人資料、冒充或跟蹤',
+  '其他不當內容',
+];
+
+class _ModerationReportDraft {
+  const _ModerationReportDraft({required this.reason, required this.detail});
+
+  final String reason;
+  final String detail;
+}
+
+class _EulaAgreementDialog extends StatelessWidget {
+  const _EulaAgreementDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const LocalizedText('最終用戶許可協議'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 560),
+        child: const SingleChildScrollView(
+          child: _SafetyPolicyText(showContact: true),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const LocalizedText('不同意並關閉'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.of(context).pop(true),
+          icon: const Icon(Icons.verified_user_outlined),
+          label: const LocalizedText('我同意'),
+        ),
+      ],
+    );
+  }
+}
+
+class _UserNameEditDialog extends StatefulWidget {
+  const _UserNameEditDialog({required this.initialUserName});
+
+  final String initialUserName;
+
+  @override
+  State<_UserNameEditDialog> createState() => _UserNameEditDialogState();
+}
+
+class _UserNameEditDialogState extends State<_UserNameEditDialog> {
+  late final TextEditingController _controller;
+  late String _draftName;
+
+  @override
+  void initState() {
+    super.initState();
+    _draftName = widget.initialUserName;
+    _controller = TextEditingController(text: widget.initialUserName);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final cleanName = _draftName.trim();
+    if (cleanName.isEmpty) {
+      return;
+    }
+    Navigator.of(context).pop(cleanName);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canSave = _draftName.trim().isNotEmpty;
+
+    return AlertDialog(
+      title: const LocalizedText('更改用戶名稱'),
+      content: TextField(
+        key: const ValueKey('quick-user-name-input'),
+        controller: _controller,
+        autofocus: true,
+        maxLength: MeshChatService._maxUserNameLength,
+        textInputAction: TextInputAction.done,
+        decoration: InputDecoration(
+          labelText: _localizedUiText('用戶名稱'),
+          prefixIcon: Icon(Icons.person_outline),
+          counterText: '',
+        ),
+        onChanged: (value) => setState(() => _draftName = value),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const LocalizedText('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: canSave ? _submit : null,
+          icon: const Icon(Icons.save_outlined),
+          label: const LocalizedText('儲存'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AccountPrivacySheet extends StatefulWidget {
+  const _AccountPrivacySheet({
+    required this.mesh,
+    required this.onDeleteAccount,
+  });
+
+  final MeshChatService mesh;
+  final Future<void> Function() onDeleteAccount;
+
+  @override
+  State<_AccountPrivacySheet> createState() => _AccountPrivacySheetState();
+}
+
+class _AccountPrivacySheetState extends State<_AccountPrivacySheet> {
+  late final TextEditingController _userNameController;
+  var _adminTapCount = 0;
+  var _adminUnlocked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _userNameController = TextEditingController(text: widget.mesh.userName);
+  }
+
+  @override
+  void dispose() {
+    _userNameController.dispose();
+    super.dispose();
+  }
+
+  void _saveUserName() {
+    final updated = widget.mesh.setUserName(_userNameController.text);
+    if (updated) {
+      _userNameController.value = TextEditingValue(
+        text: widget.mesh.userName,
+        selection: TextSelection.collapsed(offset: widget.mesh.userName.length),
+      );
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: LocalizedText(widget.mesh.status),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _handleAdminTap() {
+    if (_adminUnlocked) {
+      _openAdminPanel();
+      return;
+    }
+    _adminTapCount += 1;
+    if (_adminTapCount < 7) return;
+    _adminTapCount = 0;
+    unawaited(_showAdminLogin());
+  }
+
+  Future<void> _showAdminLogin() async {
+    var password = '';
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const LocalizedText('Admin 驗證'),
+        content: TextField(
+          key: const ValueKey('admin-password-input'),
+          autofocus: true,
+          obscureText: true,
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(
+            labelText: _localizedUiText('Admin 密碼'),
+            prefixIcon: const Icon(Icons.admin_panel_settings_outlined),
+          ),
+          onChanged: (value) => password = value,
+          onSubmitted: (_) => Navigator.of(
+            dialogContext,
+          ).pop(password.trim() == MeshChatService.adminPasswordForNow()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const LocalizedText('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('admin-login-button'),
+            onPressed: () => Navigator.of(
+              dialogContext,
+            ).pop(password.trim() == MeshChatService.adminPasswordForNow()),
+            child: const LocalizedText('驗證'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (accepted == true) {
+      setState(() => _adminUnlocked = true);
+      _openAdminPanel();
+    } else if (accepted == false) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: LocalizedText('Admin 密碼不正確。')));
+    }
+  }
+
+  void _openAdminPanel() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _AdminPanel(mesh: widget.mesh),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mesh = widget.mesh;
+
+    return ListenableBuilder(
+      listenable: mesh,
+      builder: (context, _) {
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.86,
+            ),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE0F2E9),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFBFD9CE)),
+                      ),
+                      child: const Icon(
+                        Icons.manage_accounts_outlined,
+                        color: Color(0xFF0D7C66),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          GestureDetector(
+                            key: const ValueKey('account-privacy-title'),
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _handleAdminTap,
+                            child: LocalizedText(
+                              '帳號與私隱',
+                              style: Theme.of(context).textTheme.titleLarge
+                                  ?.copyWith(fontWeight: FontWeight.w900),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          LocalizedText(
+                            '目前身份：${mesh.identityName}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF566B60)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (_adminUnlocked)
+                  _SafetyStatusCard(
+                    icon: Icons.admin_panel_settings_outlined,
+                    title: 'Admin 管理',
+                    body: '管理留言、光團、物資及用戶禁言。',
+                    child: FilledButton.icon(
+                      key: const ValueKey('open-admin-panel-button'),
+                      onPressed: _openAdminPanel,
+                      icon: const Icon(Icons.admin_panel_settings),
+                      label: const LocalizedText('開啟 Admin 管理'),
+                    ),
+                  ),
+                _SafetyStatusCard(
+                  icon: Icons.badge_outlined,
+                  title: '本機匿名帳號',
+                  body: '傳播光不使用帳密登入。App 會在本機建立匿名光點身份和固定光點名稱；用戶名稱可以自行更改。',
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.person_outline,
+                  title: '用戶名稱',
+                  body: '聊天室和地圖會顯示「用戶名稱 · 光點名稱」。',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextField(
+                        key: const ValueKey('user-name-input'),
+                        controller: _userNameController,
+                        maxLength: MeshChatService._maxUserNameLength,
+                        textInputAction: TextInputAction.done,
+                        decoration: InputDecoration(
+                          labelText: _localizedUiText('用戶名稱'),
+                          prefixIcon: Icon(Icons.person_outline),
+                          counterText: '',
+                        ),
+                        onSubmitted: (_) => _saveUserName(),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          FilledButton.icon(
+                            key: const ValueKey('save-user-name-button'),
+                            onPressed: _saveUserName,
+                            icon: const Icon(Icons.save_outlined),
+                            label: const LocalizedText('儲存用戶名稱'),
+                          ),
+                          Chip(
+                            avatar: const Icon(Icons.lock_outline, size: 16),
+                            label: LocalizedText('光點名稱：${mesh.displayName}'),
+                            side: const BorderSide(color: Color(0xFFD7DED7)),
+                            backgroundColor: const Color(0xFFFAFBF7),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.storage_outlined,
+                  title: '本機儲存資料',
+                  body:
+                      '本機會儲存光點身份、光點名稱、用戶名稱、條款同意時間、封鎖名單、隱藏訊息和舉報記錄；目前工作階段中的訊息、物資、信用和定位快取也會在刪除時一併清除。',
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.delete_forever_outlined,
+                  title: '刪除帳號與資料',
+                  body:
+                      '刪除會停止光之網絡，清除本機帳號資料，並建立新的匿名光點。此功能 1 天內只可使用 1 次。已透過 mesh 或線上 relay 傳送到其他裝置的副本無法從對方裝置自動刪除；可透過舉報或電郵要求開發者跟進公開副本。',
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      key: const ValueKey('delete-account-button'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFB3261E),
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => unawaited(widget.onDeleteAccount()),
+                      icon: const Icon(Icons.delete_forever),
+                      label: const LocalizedText('刪除本機帳號與資料'),
+                    ),
+                  ),
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.mail_outline,
+                  title: '私隱與刪除協助',
+                  body: '如需處理已傳播或公開的副本，請聯絡：',
+                  child: const SelectableText(
+                    _moderationContactEmail,
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AdminPanel extends StatelessWidget {
+  const _AdminPanel({required this.mesh});
+
+  final MeshChatService mesh;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: mesh,
+        builder: (context, _) {
+          final messages = mesh.messages.reversed.toList();
+          final rooms = mesh.rooms
+              .where((room) => room.id != MeshChatService._defaultRoomId)
+              .toList();
+          final supplies = mesh.supplies;
+          final activities = mesh.radarActivities;
+          final users = mesh.onlineUsers.where((user) => !user.isMe).toList();
+          return ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.9,
+            ),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              children: [
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.admin_panel_settings,
+                      color: Color(0xFFB3261E),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: LocalizedText(
+                        'Admin 管理',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                _AdminExpansion(
+                  key: const ValueKey('admin-messages-section'),
+                  icon: Icons.chat_outlined,
+                  title: '留言',
+                  count: messages.length,
+                  emptyText: '目前沒有留言。',
+                  children: messages
+                      .map(
+                        (message) => ListTile(
+                          dense: true,
+                          title: LocalizedText(
+                            message.text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: LocalizedText(
+                            '${message.senderName} · ${message.roomName}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: IconButton(
+                            key: ValueKey('admin-delete-message-${message.id}'),
+                            tooltip: _localizedUiText('刪除留言'),
+                            onPressed: () =>
+                                mesh.adminDeleteMessage(message.id),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+                _AdminExpansion(
+                  key: const ValueKey('admin-rooms-section'),
+                  icon: Icons.groups_outlined,
+                  title: '光團',
+                  count: rooms.length,
+                  emptyText: '目前沒有可刪除的光團。',
+                  children: rooms
+                      .map(
+                        (room) => ListTile(
+                          dense: true,
+                          title: LocalizedText(room.name),
+                          trailing: IconButton(
+                            key: ValueKey('admin-delete-room-${room.id}'),
+                            tooltip: _localizedUiText('刪除光團'),
+                            onPressed: () => mesh.adminDeleteRoom(room.id),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+                _AdminExpansion(
+                  key: const ValueKey('admin-supplies-section'),
+                  icon: Icons.inventory_2_outlined,
+                  title: '物資',
+                  count: supplies.length,
+                  emptyText: '目前沒有物資。',
+                  children: supplies
+                      .map(
+                        (supply) => ListTile(
+                          dense: true,
+                          title: LocalizedText(supply.title),
+                          subtitle: LocalizedText(supply.offeredByName),
+                          trailing: IconButton(
+                            key: ValueKey('admin-delete-supply-${supply.id}'),
+                            tooltip: _localizedUiText('刪除物資'),
+                            onPressed: () => mesh.adminDeleteSupply(supply.id),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+                _AdminExpansion(
+                  key: const ValueKey('admin-activities-section'),
+                  icon: Icons.event_busy_outlined,
+                  title: '活動',
+                  count: activities.length,
+                  emptyText: '目前沒有活動。',
+                  children: activities
+                      .map(
+                        (activity) => ListTile(
+                          dense: true,
+                          leading: Icon(
+                            _radarActivityIcon(activity.type),
+                            color: _radarActivityColor(activity.type),
+                          ),
+                          title: LocalizedText(activity.title),
+                          subtitle: LocalizedText(
+                            '${activity.localizedTypeLabel} · ${activity.hostName}',
+                          ),
+                          trailing: IconButton(
+                            key: ValueKey(
+                              'admin-delete-activity-${activity.id}',
+                            ),
+                            tooltip: _localizedUiText('刪除活動'),
+                            onPressed: () =>
+                                mesh.adminDeleteActivity(activity.id),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+                _AdminExpansion(
+                  key: const ValueKey('admin-users-section'),
+                  icon: Icons.person_off_outlined,
+                  title: '用戶禁言',
+                  count: users.length,
+                  emptyText: '目前沒有其他在線用戶。',
+                  children: users.map((user) {
+                    final muted = mesh.isUserMuted(user.id);
+                    return SwitchListTile(
+                      key: ValueKey('admin-mute-user-${user.id}'),
+                      dense: true,
+                      title: LocalizedText(user.name),
+                      subtitle: LocalizedText(muted ? '已禁言' : '可發言'),
+                      value: muted,
+                      onChanged: (value) =>
+                          mesh.adminSetUserMuted(user.id, muted: value),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _AdminExpansion extends StatelessWidget {
+  const _AdminExpansion({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.count,
+    required this.emptyText,
+    required this.children,
+  });
+
+  final IconData icon;
+  final String title;
+  final int count;
+  final String emptyText;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      leading: Icon(icon),
+      title: LocalizedText('${_localizedUiText(title)} ($count)'),
+      children: children.isEmpty
+          ? [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: LocalizedText(emptyText),
+                ),
+              ),
+            ]
+          : children,
+    );
+  }
+}
+
+class _ChatSafetySheet extends StatelessWidget {
+  const _ChatSafetySheet({required this.mesh, required this.onAcceptTerms});
+
+  final MeshChatService mesh;
+  final VoidCallback onAcceptTerms;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: mesh,
+      builder: (context, _) {
+        final acceptedAt = mesh.eulaAcceptedAt;
+        final acceptedLabel = acceptedAt == null
+            ? '尚未同意'
+            : '已於 ${_formatDateTime(acceptedAt)} 同意';
+        final blockedUsers = mesh.blockedUsers;
+
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.86,
+            ),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE0F2E9),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFBFD9CE)),
+                      ),
+                      child: const Icon(
+                        Icons.shield_outlined,
+                        color: Color(0xFF0D7C66),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LocalizedText(
+                            '聊天安全與舉報',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                          const SizedBox(height: 4),
+                          LocalizedText(
+                            '條款狀態：$acceptedLabel',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF566B60)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (!mesh.eulaAccepted)
+                  FilledButton.icon(
+                    onPressed: onAcceptTerms,
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: const LocalizedText('同意最終用戶許可協議'),
+                  ),
+                if (!mesh.eulaAccepted) const SizedBox(height: 12),
+                const _SafetyPolicyText(showContact: true),
+                const SizedBox(height: 12),
+                _SafetyStatusCard(
+                  icon: Icons.filter_alt_outlined,
+                  title: '內容過濾',
+                  body:
+                      '訊息、光團名稱和物資發布會在送出及接收時自動檢查；疑似色情、仇恨、騷擾、暴力威脅、詐騙、垃圾訊息或非法交易內容會被阻擋。',
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.flag_outlined,
+                  title: '舉報與處理',
+                  body:
+                      '可在訊息或用戶選單舉報不當內容。開發者收到 app 內記錄或電郵後，會在 $_moderationResponseWindow 內審核、刪除違規內容並移除發布該內容的惡意用戶。',
+                ),
+                _SafetyStatusCard(
+                  icon: Icons.block,
+                  title: '封鎖與解鎖',
+                  body: '封鎖用戶後，對方訊息、物資和定位會立即從你的信息流隱藏；你可在安全中心解鎖用戶。',
+                ),
+                if (blockedUsers.isNotEmpty)
+                  _SafetyStatusCard(
+                    icon: Icons.lock_open_outlined,
+                    title: '已封鎖用戶',
+                    body: '解鎖後，之後收到的新訊息、物資和定位會重新顯示。',
+                    child: _BlockedUsersList(
+                      users: blockedUsers,
+                      onUnblockUser: (user) => _unblockUser(context, user),
+                    ),
+                  ),
+                _SafetyStatusCard(
+                  icon: Icons.mail_outline,
+                  title: '聯絡開發者',
+                  body: '舉報不當行為、惡意用戶或安全問題：',
+                  child: const SelectableText(
+                    _moderationContactEmail,
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                if (mesh.moderationReportCount > 0)
+                  _SafetyStatusCard(
+                    icon: Icons.receipt_long_outlined,
+                    title: '本機舉報記錄',
+                    body: '已儲存 ${mesh.moderationReportCount} 宗舉報，可向開發者提供作審核跟進。',
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _unblockUser(BuildContext context, MeshBlockedUser user) {
+    mesh.unblockUser(user.id, userName: user.name);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: LocalizedText(mesh.status),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  static String _formatDateTime(DateTime time) {
+    final local = time.toLocal();
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '${local.year}-$month-$day $hour:$minute';
+  }
+}
+
+class _BlockedUsersList extends StatelessWidget {
+  const _BlockedUsersList({required this.users, required this.onUnblockUser});
+
+  final List<MeshBlockedUser> users;
+  final ValueChanged<MeshBlockedUser> onUnblockUser;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (var index = 0; index < users.length; index += 1) ...[
+          if (index > 0) const Divider(height: 1),
+          _BlockedUserRow(user: users[index], onUnblockUser: onUnblockUser),
+        ],
+      ],
+    );
+  }
+}
+
+class _BlockedUserRow extends StatelessWidget {
+  const _BlockedUserRow({required this.user, required this.onUnblockUser});
+
+  final MeshBlockedUser user;
+  final ValueChanged<MeshBlockedUser> onUnblockUser;
+
+  @override
+  Widget build(BuildContext context) {
+    final showId = user.name != user.id;
+
+    return ListTile(
+      key: ValueKey('blocked-user-${user.id}'),
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.person_off_outlined),
+      title: LocalizedText(
+        user.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+      subtitle: showId
+          ? LocalizedText(user.id, maxLines: 1, overflow: TextOverflow.ellipsis)
+          : null,
+      trailing: TextButton.icon(
+        key: ValueKey('unblock-user-${user.id}'),
+        onPressed: () => onUnblockUser(user),
+        icon: const Icon(Icons.lock_open, size: 18),
+        label: const LocalizedText('解鎖'),
+      ),
+    );
+  }
+}
+
+class _SafetyPolicyText extends StatelessWidget {
+  const _SafetyPolicyText({required this.showContact});
+
+  final bool showContact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        LocalizedText(
+          '傳播光對不良內容和惡意用戶採取零容忍政策。',
+          style: Theme.of(
+            context,
+          ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 8),
+        const _SafetyPolicyBullet(
+          text: '不得發布色情裸露、性騷擾、仇恨、騷擾、欺凌、威脅、暴力煽動、詐騙、垃圾訊息、非法交易、冒充、跟蹤或公開他人私隱的內容。',
+        ),
+        const _SafetyPolicyBullet(
+          text: '不得濫用聊天、光團、物資、定位或 SOS 功能騷擾、欺騙、恐嚇或傷害其他用戶。',
+        ),
+        const _SafetyPolicyBullet(
+          text: '即使以匿名光點身份發布內容，也必須遵守本條款；違規匿名內容和發布者可被舉報、封鎖和移除。',
+        ),
+        const _SafetyPolicyBullet(
+          text:
+              '違規內容會被刪除；發布不良內容或惡意行為的用戶會被移除或封鎖。開發者會在 $_moderationResponseWindow 內處理舉報。',
+        ),
+        const _SafetyPolicyBullet(text: '你可以舉報訊息或用戶、封鎖或解鎖用戶，並立即從信息流刪除不想看到的帖子。'),
+        if (showContact) ...[
+          const SizedBox(height: 8),
+          LocalizedText(
+            '舉報不當行為：$_moderationContactEmail',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w800),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _SafetyPolicyBullet extends StatelessWidget {
+  const _SafetyPolicyBullet({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: SizedBox.square(
+              dimension: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xFF0D7C66),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: LocalizedText(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF4B5F56),
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SafetyStatusCard extends StatelessWidget {
+  const _SafetyStatusCard({
+    required this.icon,
+    required this.title,
+    required this.body,
+    this.child,
+  });
+
+  final IconData icon;
+  final String title;
+  final String body;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE0E5DE)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, color: const Color(0xFF0D7C66)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LocalizedText(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    LocalizedText(
+                      body,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF4B5F56),
+                        height: 1.35,
+                      ),
+                    ),
+                    if (child != null) ...[const SizedBox(height: 6), child!],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReportContentDialog extends StatefulWidget {
+  const _ReportContentDialog({required this.title, required this.targetLabel});
+
+  final String title;
+  final String targetLabel;
+
+  @override
+  State<_ReportContentDialog> createState() => _ReportContentDialogState();
+}
+
+class _ReportContentDialogState extends State<_ReportContentDialog> {
+  late String _reason = _moderationReportReasons.first;
+  final TextEditingController _detailController = TextEditingController();
+
+  @override
+  void dispose() {
+    _detailController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: LocalizedText(widget.title),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LocalizedText(
+                widget.targetLabel,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF566B60)),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _reason,
+                decoration: InputDecoration(
+                  labelText: _localizedUiText('舉報原因'),
+                  prefixIcon: Icon(Icons.flag_outlined),
+                ),
+                items: [
+                  for (final reason in _moderationReportReasons)
+                    DropdownMenuItem(
+                      value: reason,
+                      child: LocalizedText(reason),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _reason = value);
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _detailController,
+                minLines: 2,
+                maxLines: 4,
+                decoration: InputDecoration(
+                  labelText: _localizedUiText('補充資料（選填）'),
+                  prefixIcon: Icon(Icons.notes_outlined),
+                ),
+              ),
+              const SizedBox(height: 10),
+              LocalizedText(
+                '舉報會儲存在本機記錄；開發者收到 app 內記錄或電郵後會在 $_moderationResponseWindow 內處理。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF566B60),
+                  height: 1.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const LocalizedText('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.of(context).pop(
+              _ModerationReportDraft(
+                reason: _reason,
+                detail: _detailController.text.trim(),
+              ),
+            );
+          },
+          icon: const Icon(Icons.flag_outlined),
+          label: const LocalizedText('提交舉報'),
+        ),
+      ],
+    );
+  }
+}
+
+class _FeatureGuideSheet extends StatelessWidget {
+  const _FeatureGuideSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+      children: const [
+        _FeatureGuideHeader(),
+        SizedBox(height: 12),
+        _FeatureGuideSection(
+          icon: Icons.hub_outlined,
+          title: '光之網絡',
+          description:
+              '傳播光是一個線上 / 離線光之網絡聊天工具。線上模式透過 WebSocket relay，'
+              '用戶入 APP 即可聊天，不需要連同一個 WiFi；沒有外網時，仍可在同一個 WiFi、藍芽Mesh、'
+              '手機熱點、Wi-Fi Direct group、OpenWrt mesh 或其他已互通 LAN 進入同一個本地傳播頻道。',
+          items: [
+            '線上光網：連接已設定的 relay，聊天、光團、物資、信用和定位會同步給其他線上光點。',
+            '離線 mesh：開啟 WiFi / 藍芽後，APP 會用 LAN 自動尋找附近節點，並用 TCP 傳送訊息。',
+            '多 hop 傳播：節點收到新訊息後會繼續向其他已知節點轉發。',
+            '連接方式：同一 WiFi、手機熱點、Wi-Fi Direct group 或 OpenWrt mesh。',
+          ],
+        ),
+        _FeatureGuideSection(
+          icon: Icons.forum_outlined,
+          title: '光之通道',
+          description: '光之通道是主要聊天和協作區，可在不同光團中交換訊息、尋找在線用家和分享物資。',
+          items: [
+            '傳播頻道：在目前光團傳送訊息，連線後會自動同步。',
+            '在線用家：查看已進入 APP 的光點、引用名稱回覆，並為其他光點加信用分。',
+            '光團：建立或切換主題頻道，讓不同事件、地區或小隊分開溝通。',
+            '物資分享：發布物資名稱、數量和交收備註；分享者可標記物資已取完。',
+          ],
+        ),
+        _FeatureGuideSection(
+          icon: Icons.radar,
+          title: '光之雷達',
+          description: '光之雷達用來分享和查看光點位置，協助附近用戶互相找到彼此。',
+          items: [
+            '定位後會把你的光點同步到光之網絡，附近光點會出現在雷達列表和地圖上。',
+            '線上可使用 Google Map；沒有外網時，仍可用香港離線地圖顯示附近光點。',
+            '可查看最近光點、求救光點和距離資訊，並引用光點名稱回到光之通道聊天。',
+          ],
+        ),
+        _FeatureGuideSection(
+          icon: Icons.flash_on,
+          title: 'SOS',
+          description: 'SOS 功能用於緊急求助，會同時影響手機閃光燈和網絡內的求救狀態。',
+          items: [
+            'SOS 燈：手機閃光燈會持續閃出 SOS 燈號，直到再次按下停止。',
+            '求救光點：啟動 SOS 後，你會在在線用家和光之雷達中以求救狀態顯示。',
+            '其他用戶可在雷達找到求救光點，或引用名稱在光之通道回覆。',
+          ],
+        ),
+        _FeatureGuideSection(
+          icon: Icons.wifi_tethering,
+          title: '無線工具',
+          description: '光之網絡頁提供手機本地連線工具，方便沒有外網時快速組網。',
+          items: [
+            '支援掃描 Wi-Fi Direct peer、建立 group、開本地熱點或連接附近 WiFi。',
+            'iOS：可要求本地網絡權限，掃描同一 WiFi 內已開啟本 APP 的 LAN peer。',
+            '進入同一網段後，傳播光會自動配對。',
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _FeatureGuideHeader extends StatelessWidget {
+  const _FeatureGuideHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE0F2E9),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFBFD9CE)),
+          ),
+          child: const Icon(Icons.lightbulb_outline, color: Color(0xFF0D7C66)),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LocalizedText(
+                '功能介紹',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 4),
+              LocalizedText(
+                '線上可即入即聊，離線可在同一 LAN 內建立本地傳播頻道。',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF4B5F56),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FeatureGuideSection extends StatelessWidget {
+  const _FeatureGuideSection({
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.items,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final List<String> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE0E5DE)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, color: const Color(0xFF0D7C66)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: LocalizedText(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              LocalizedText(
+                description,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF4B5F56),
+                ),
+              ),
+              const SizedBox(height: 10),
+              for (final item in items) _FeatureGuideBullet(text: item),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FeatureGuideBullet extends StatelessWidget {
+  const _FeatureGuideBullet({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: SizedBox.square(
+              dimension: 5,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xFF0D7C66),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: LocalizedText(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF34453D),
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _radarActivityTypeLabel(String type) {
+  return switch (type) {
+    MeshRadarActivity.sharingType => '分享',
+    MeshRadarActivity.medicalType => '醫療',
+    MeshRadarActivity.spiritualType => '心靈',
+    _ => '互助',
+  };
+}
+
+IconData _radarActivityIcon(String type) {
+  return switch (type) {
+    MeshRadarActivity.sharingType => Icons.volunteer_activism_outlined,
+    MeshRadarActivity.medicalType => Icons.medical_services_outlined,
+    MeshRadarActivity.spiritualType => Icons.self_improvement,
+    _ => Icons.diversity_1_outlined,
+  };
+}
+
+Color _radarActivityColor(String type) {
+  return switch (type) {
+    MeshRadarActivity.sharingType => const Color(0xFF1565C0),
+    MeshRadarActivity.medicalType => const Color(0xFFC62828),
+    MeshRadarActivity.spiritualType => const Color(0xFF6A1B9A),
+    _ => const Color(0xFF0D7C66),
+  };
+}
+
+void _showRadarActivityDetails(
+  BuildContext context,
+  MeshRadarActivity activity,
+  ValueChanged<String> onQuoteHostName,
+) {
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      final expiresAt = activity.expiresAt.toLocal();
+      final expiresLabel =
+          '${expiresAt.month}/${expiresAt.day} '
+          '${expiresAt.hour.toString().padLeft(2, '0')}:'
+          '${expiresAt.minute.toString().padLeft(2, '0')}';
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: _radarActivityColor(
+                      activity.type,
+                    ).withValues(alpha: 0.12),
+                    foregroundColor: _radarActivityColor(activity.type),
+                    child: Icon(_radarActivityIcon(activity.type)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        LocalizedText(
+                          activity.title,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w900),
+                        ),
+                        LocalizedText(
+                          '${activity.localizedTypeLabel}活動 · ${activity.hostName}',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: const Color(0xFF66756D)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              LocalizedText(
+                activity.details.isEmpty ? '未提供活動詳情。' : activity.details,
+              ),
+              const SizedBox(height: 10),
+              LocalizedText(
+                '活動有效至 $expiresLabel',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(sheetContext).pop(),
+                    child: const LocalizedText('關閉'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      onQuoteHostName(activity.hostName);
+                    },
+                    icon: const Icon(Icons.format_quote),
+                    label: const LocalizedText('引用主辦者聊天'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+void _showRadarUserActivities(
+  BuildContext context,
+  RadarContact contact,
+  List<MeshRadarActivity> activities,
+  ValueChanged<String> onQuoteUserName,
+) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: contact.isSosActive
+                          ? const Color(0xFFFFEEE9)
+                          : const Color(0xFFE0F2E9),
+                      foregroundColor: contact.isSosActive
+                          ? const Color(0xFFB00020)
+                          : const Color(0xFF0D7C66),
+                      child: Icon(
+                        contact.isSosActive
+                            ? Icons.warning_amber
+                            : Icons.person_pin_circle,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LocalizedText(
+                            '${contact.name} 的活動',
+                            key: const ValueKey('radar-user-activities-title'),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w900),
+                          ),
+                          LocalizedText(
+                            '${activities.length} 個有效活動',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF66756D)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                if (activities.isEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFAFBF7),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE0E5DE)),
+                    ),
+                    child: const LocalizedText('這個用戶暫未有活動。'),
+                  )
+                else
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: activities.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final activity = activities[index];
+                        return ListTile(
+                          key: ValueKey('radar-user-activity-${activity.id}'),
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: _radarActivityColor(
+                              activity.type,
+                            ).withValues(alpha: 0.12),
+                            foregroundColor: _radarActivityColor(activity.type),
+                            child: Icon(_radarActivityIcon(activity.type)),
+                          ),
+                          title: LocalizedText(
+                            activity.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          subtitle: LocalizedText(
+                            activity.details.isEmpty
+                                ? activity.localizedTypeLabel
+                                : '${activity.localizedTypeLabel} · ${activity.details}',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () {
+                            Navigator.of(sheetContext).pop();
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (context.mounted) {
+                                _showRadarActivityDetails(
+                                  context,
+                                  activity,
+                                  onQuoteUserName,
+                                );
+                              }
+                            });
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 14),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    onPressed: contact.isMe
+                        ? null
+                        : () {
+                            Navigator.of(sheetContext).pop();
+                            onQuoteUserName(contact.name);
+                          },
+                    icon: const Icon(Icons.format_quote),
+                    label: const LocalizedText('引用用戶聊天'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _LightRadarPanel extends StatefulWidget {
+  const _LightRadarPanel({
+    required this.mesh,
+    required this.radar,
+    required this.enableWebView,
+    required this.onLocate,
+    required this.onQuoteContactName,
+    required this.onEditUserName,
+  });
+
+  final MeshChatService mesh;
+  final LightRadarController radar;
+  final bool enableWebView;
+  final VoidCallback onLocate;
+  final ValueChanged<String> onQuoteContactName;
+  final VoidCallback onEditUserName;
+
+  @override
+  State<_LightRadarPanel> createState() => _LightRadarPanelState();
+}
+
+enum _RadarMapMode { online, offline }
+
+class _LightRadarPanelState extends State<_LightRadarPanel> {
+  String? _selectedContactId;
+  var _selectedContactFocusVersion = 0;
+  var _locationFocusVersion = 0;
+  var _mapMode = _googleMapsApiKey.isEmpty
+      ? _RadarMapMode.offline
+      : _RadarMapMode.online;
+
+  void _selectContact(String? contactId) {
+    setState(() {
+      _selectedContactId = contactId;
+      if (contactId != null) {
+        _selectedContactFocusVersion += 1;
+      }
+    });
+    if (contactId == null) {
+      return;
+    }
+    final matchingContacts = widget.mesh.radarContacts.where(
+      (contact) => contact.id == contactId,
+    );
+    if (matchingContacts.isEmpty) {
+      return;
+    }
+    _showRadarUserActivities(
+      context,
+      matchingContacts.first,
+      widget.mesh.radarActivitiesForHost(contactId),
+      widget.onQuoteContactName,
+    );
+  }
+
+  void _locate() {
+    setState(() {
+      _selectedContactId = null;
+      _locationFocusVersion += 1;
+    });
+    widget.onLocate();
+  }
+
+  Future<void> _createActivity() async {
+    if (widget.mesh.myLocation == null) {
+      _locate();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: LocalizedText('正在定位，定位完成後請再開活動。')),
+      );
+      return;
+    }
+
+    final remaining = await widget.mesh.activityCreatesRemainingToday();
+    if (!mounted) {
+      return;
+    }
+    if (remaining == 0) {
+      widget.mesh.setStatus('今天已建立 3 次活動，請於明天再建立。');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: LocalizedText(widget.mesh.status)));
+      return;
+    }
+
+    final draft = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) {
+        var title = '';
+        var details = '';
+        var type = MeshRadarActivity.mutualAidType;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final cleanTitle = title.trim();
+
+            void submit() {
+              if (cleanTitle.isEmpty) {
+                return;
+              }
+              Navigator.of(dialogContext).pop(<String, String>{
+                'title': cleanTitle,
+                'details': details.trim(),
+                'type': type,
+              });
+            }
+
+            return AlertDialog(
+              title: const LocalizedText('建立雷達活動'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      key: const ValueKey('activity-type-input'),
+                      initialValue: type,
+                      decoration: InputDecoration(
+                        labelText: _localizedUiText('活動類型'),
+                        prefixIcon: Icon(Icons.category_outlined),
+                      ),
+                      items: MeshRadarActivity.supportedTypes
+                          .map(
+                            (value) => DropdownMenuItem<String>(
+                              value: value,
+                              child: Row(
+                                children: [
+                                  Icon(_radarActivityIcon(value), size: 18),
+                                  const SizedBox(width: 8),
+                                  LocalizedText(_radarActivityTypeLabel(value)),
+                                ],
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setDialogState(() => type = value);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const ValueKey('activity-title-input'),
+                      autofocus: true,
+                      textInputAction: TextInputAction.next,
+                      decoration: InputDecoration(
+                        labelText: _localizedUiText('活動名稱'),
+                        prefixIcon: Icon(Icons.edit_calendar_outlined),
+                      ),
+                      onChanged: (value) => setDialogState(() => title = value),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      key: const ValueKey('activity-details-input'),
+                      minLines: 2,
+                      maxLines: 4,
+                      textInputAction: TextInputAction.done,
+                      decoration: InputDecoration(
+                        labelText: _localizedUiText('活動詳情 / 集合方式'),
+                        prefixIcon: Icon(Icons.notes_outlined),
+                      ),
+                      onChanged: (value) =>
+                          setDialogState(() => details = value),
+                      onSubmitted: (_) => submit(),
+                    ),
+                    const SizedBox(height: 12),
+                    LocalizedText(
+                      '活動會標記在目前位置，24 小時後自動結束。今日尚可建立 $remaining 次。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF66756D),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const LocalizedText('取消'),
+                ),
+                FilledButton.icon(
+                  onPressed: cleanTitle.isEmpty ? null : submit,
+                  icon: const Icon(Icons.add_location_alt_outlined),
+                  label: const LocalizedText('建立活動'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (draft == null || !mounted) {
+      return;
+    }
+    await widget.mesh.createRadarActivity(
+      title: draft['title'] ?? '',
+      details: draft['details'] ?? '',
+      type: draft['type'] ?? MeshRadarActivity.mutualAidType,
+    );
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: LocalizedText(widget.mesh.status)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // MeshChatService is the source of truth after a successful locate. Using
+    // only the controller's transient value can hide this device while the
+    // mesh already has (and is sharing) its location.
+    final location = widget.mesh.myLocation ?? widget.radar.location;
+    final contacts = widget.mesh.radarContacts;
+    final activities = widget.mesh.radarActivities;
+    final contactIds = contacts.map((contact) => contact.id).toSet();
+    final selectedContactId = contactIds.contains(_selectedContactId)
+        ? _selectedContactId
+        : null;
+    final effectiveMapMode =
+        _mapMode == _RadarMapMode.online && widget.enableWebView
+        ? _RadarMapMode.online
+        : _RadarMapMode.offline;
+    final nearbyContacts = widget.mesh.radarContactsWithin(_nearbyRadarMeters);
+    final nearbyContactIds = nearbyContacts
+        .map((contact) => contact.id)
+        .toSet();
+    final sosContacts =
+        contacts.where((contact) => contact.isSosActive).toList()..sort((a, b) {
+          if (a.isMe == b.isMe) {
+            return a.name.compareTo(b.name);
+          }
+          return a.isMe ? -1 : 1;
+        });
+    final closestContacts = _closestRadarContacts(
+      contacts: contacts,
+      currentLocation: widget.mesh.myLocation,
+      limit: 10,
+    );
+    final nearbyCount = nearbyContacts.length;
+    final radarMapSignature = _radarMapSignature(
+      location: location,
+      contacts: contacts,
+      activities: activities,
+      nearbyContactIds: nearbyContactIds,
+      selectedContactId: selectedContactId,
+    );
+
+    return Card(
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: Color(0xFFE0E5DE))),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.radar, color: Color(0xFF0D7C66)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LocalizedText(
+                            '光之雷達',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          LocalizedText(
+                            sosContacts.isNotEmpty
+                                ? '求救光點 ${sosContacts.length} 個'
+                                : activities.isNotEmpty
+                                ? '雷達活動 ${activities.length} 個'
+                                : nearbyCount == 0
+                                ? effectiveMapMode == _RadarMapMode.online
+                                      ? '線上 Google Map'
+                                      : '香港18區離線地圖'
+                                : '$_nearbyRadarLabel $nearbyCount 個光點',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: sosContacts.isNotEmpty
+                                      ? const Color(0xFFB00020)
+                                      : const Color(0xFF66756D),
+                                  fontWeight: sosContacts.isNotEmpty
+                                      ? FontWeight.w800
+                                      : null,
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    LocalizedTooltip(
+                      message: '更改用戶名稱',
+                      child: IconButton(
+                        key: const ValueKey('radar-edit-user-name-button'),
+                        onPressed: widget.onEditUserName,
+                        icon: const Icon(Icons.edit_outlined),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SegmentedButton<_RadarMapMode>(
+                        showSelectedIcon: false,
+                        segments: const [
+                          ButtonSegment<_RadarMapMode>(
+                            value: _RadarMapMode.online,
+                            icon: Icon(Icons.public, size: 16),
+                            label: LocalizedText('線上'),
+                          ),
+                          ButtonSegment<_RadarMapMode>(
+                            value: _RadarMapMode.offline,
+                            icon: Icon(Icons.map_outlined, size: 16),
+                            label: LocalizedText('離線'),
+                          ),
+                        ],
+                        selected: {_mapMode},
+                        onSelectionChanged: (selection) {
+                          final mode = selection.single;
+                          setState(() => _mapMode = mode);
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        key: const ValueKey('radar-locate-button'),
+                        onPressed: widget.radar.busy ? null : _locate,
+                        icon: widget.radar.busy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.my_location),
+                        label: const LocalizedText('定位'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        key: const ValueKey('create-radar-activity-button'),
+                        onPressed: () => unawaited(_createActivity()),
+                        icon: const Icon(Icons.add_location_alt_outlined),
+                        label: const LocalizedText('開活動'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: effectiveMapMode == _RadarMapMode.online
+                  ? _OnlineGoogleRadarMap(
+                      key: ValueKey(
+                        'online-google-map-${_currentAppLanguage.code}',
+                      ),
+                      enabled: widget.enableWebView,
+                      apiKey: _googleMapsApiKey,
+                      mapId: _googleMapsMapId,
+                      displayName: widget.mesh.identityName,
+                      location: location,
+                      contacts: contacts,
+                      activities: activities,
+                      nearbyContactIds: nearbyContactIds,
+                      locationFocusVersion: _locationFocusVersion,
+                      selectedContactId: selectedContactId,
+                      selectedContactFocusVersion: _selectedContactFocusVersion,
+                      onSelectedContactChanged: _selectContact,
+                      onQuoteContactName: widget.onQuoteContactName,
+                    )
+                  : _OfflineHongKongMap(
+                      location: location,
+                      contacts: contacts,
+                      activities: activities,
+                      nearbyContactIds: nearbyContactIds,
+                      refreshSignature: radarMapSignature,
+                      locationFocusVersion: _locationFocusVersion,
+                      selectedContactId: selectedContactId,
+                      selectedContactFocusVersion: _selectedContactFocusVersion,
+                      onSelectedContactChanged: _selectContact,
+                      onQuoteContactName: widget.onQuoteContactName,
+                    ),
+            ),
+          ),
+          _ClosestRadarStrip(
+            contacts: closestContacts,
+            currentLocation: widget.mesh.myLocation,
+            selectedContactId: selectedContactId,
+            onSelectedContact: _selectContact,
+            onQuoteContactName: widget.onQuoteContactName,
+          ),
+          _SosRadarStrip(
+            contacts: sosContacts,
+            currentLocation: widget.mesh.myLocation,
+            selectedContactId: selectedContactId,
+            onSelectedContact: _selectContact,
+            onQuoteContactName: widget.onQuoteContactName,
+          ),
+          _DistrictRadarReport(
+            contacts: contacts,
+            currentLocation: widget.mesh.myLocation,
+          ),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: _RadarStatus(
+              location: location,
+              message: widget.radar.message,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RadarStatus extends StatelessWidget {
+  const _RadarStatus({required this.location, required this.message});
+
+  final DeviceLocation? location;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = location == null
+        ? message
+        : '$message · ${_formatCoordinate(location!.latitude)}, '
+              '${_formatCoordinate(location!.longitude)}'
+              ' · +/- ${location!.accuracyMeters.round()}m';
+
+    return Row(
+      children: [
+        const Icon(Icons.satellite_alt_outlined, size: 18),
+        const SizedBox(width: 8),
+        Expanded(
+          child: LocalizedText(
+            text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: const Color(0xFF4B5F56)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _formatCoordinate(double value) {
+    return value.toStringAsFixed(5);
+  }
+}
+
+class _ClosestRadarStrip extends StatelessWidget {
+  const _ClosestRadarStrip({
+    required this.contacts,
+    required this.currentLocation,
+    required this.selectedContactId,
+    required this.onSelectedContact,
+    required this.onQuoteContactName,
+  });
+
+  final List<RadarContact> contacts;
+  final DeviceLocation? currentLocation;
+  final String? selectedContactId;
+  final ValueChanged<String> onSelectedContact;
+  final ValueChanged<String> onQuoteContactName;
+
+  @override
+  Widget build(BuildContext context) {
+    final location = currentLocation;
+    const label = '最近10個光點';
+
+    return Container(
+      height: 50,
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: Row(
+        children: [
+          Chip(
+            avatar: const Icon(Icons.near_me_outlined, size: 16),
+            label: LocalizedText(label),
+            side: const BorderSide(color: Color(0xFFD7DED7)),
+            backgroundColor: const Color(0xFFFAFBF7),
+            visualDensity: VisualDensity.compact,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: contacts.isEmpty
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: LocalizedText(
+                      location == null ? '定位後顯示最近光點' : '未見其他光點',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF66756D),
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: contacts.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final contact = contacts[index];
+                      final distance = location == null
+                          ? 0.0
+                          : contact.distanceFrom(location);
+                      final isSelected = contact.id == selectedContactId;
+
+                      return Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ActionChip(
+                            avatar: Icon(
+                              Icons.person_pin_circle,
+                              size: 16,
+                              color: isSelected
+                                  ? const Color(0xFF0D7C66)
+                                  : null,
+                            ),
+                            label: LocalizedText(
+                              '${contact.name} ${distance.toStringAsFixed(1)}m',
+                            ),
+                            side: BorderSide(
+                              color: isSelected
+                                  ? const Color(0xFF0D7C66)
+                                  : const Color(0xFFE0B8AE),
+                            ),
+                            backgroundColor: isSelected
+                                ? const Color(0xFFE0F2E9)
+                                : const Color(0xFFFFEEE9),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => onSelectedContact(contact.id),
+                          ),
+                          const SizedBox(width: 4),
+                          LocalizedTooltip(
+                            message: '引用名稱聊天',
+                            child: IconButton.filledTonal(
+                              onPressed: () => onQuoteContactName(contact.name),
+                              icon: const Icon(Icons.format_quote, size: 18),
+                              style: IconButton.styleFrom(
+                                fixedSize: const Size(32, 32),
+                                minimumSize: const Size(32, 32),
+                                padding: EdgeInsets.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SosRadarStrip extends StatelessWidget {
+  const _SosRadarStrip({
+    required this.contacts,
+    required this.currentLocation,
+    required this.selectedContactId,
+    required this.onSelectedContact,
+    required this.onQuoteContactName,
+  });
+
+  final List<RadarContact> contacts;
+  final DeviceLocation? currentLocation;
+  final String? selectedContactId;
+  final ValueChanged<String> onSelectedContact;
+  final ValueChanged<String> onQuoteContactName;
+
+  @override
+  Widget build(BuildContext context) {
+    if (contacts.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final location = currentLocation;
+
+    return Container(
+      height: 50,
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: Row(
+        children: [
+          const Chip(
+            avatar: Icon(Icons.warning_amber, size: 16),
+            label: LocalizedText('求救光點'),
+            side: BorderSide(color: Color(0xFFE0B8AE)),
+            backgroundColor: Color(0xFFFFEEE9),
+            visualDensity: VisualDensity.compact,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: contacts.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final contact = contacts[index];
+                final distance = location == null
+                    ? null
+                    : contact.distanceFrom(location);
+                final isSelected = contact.id == selectedContactId;
+                final label = distance == null
+                    ? contact.isMe
+                          ? '${contact.name}（你）'
+                          : contact.name
+                    : '${contact.isMe ? '${contact.name}（你）' : contact.name} ${distance.toStringAsFixed(1)}m';
+
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ActionChip(
+                      avatar: const Icon(Icons.warning_amber, size: 16),
+                      label: LocalizedText(label),
+                      side: BorderSide(
+                        color: isSelected
+                            ? const Color(0xFFB00020)
+                            : const Color(0xFFE0B8AE),
+                      ),
+                      backgroundColor: isSelected
+                          ? const Color(0xFFFFDAD6)
+                          : const Color(0xFFFFEEE9),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: _localizedUiText('選取求救光點'),
+                      onPressed: () => onSelectedContact(contact.id),
+                    ),
+                    if (!contact.isMe) ...[
+                      const SizedBox(width: 4),
+                      LocalizedTooltip(
+                        message: '引用求救名稱聊天',
+                        child: IconButton.filledTonal(
+                          onPressed: () => onQuoteContactName(contact.name),
+                          icon: const Icon(Icons.format_quote, size: 18),
+                          style: IconButton.styleFrom(
+                            fixedSize: const Size(32, 32),
+                            minimumSize: const Size(32, 32),
+                            padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DistrictRadarReport extends StatelessWidget {
+  const _DistrictRadarReport({
+    required this.contacts,
+    required this.currentLocation,
+  });
+
+  final List<RadarContact> contacts;
+  final DeviceLocation? currentLocation;
+
+  @override
+  Widget build(BuildContext context) {
+    final report = _DistrictCrowdReport.from(
+      contacts: contacts,
+      currentLocation: currentLocation,
+    );
+    final currentDistrict = report.currentDistrictName;
+    final textTheme = Theme.of(context).textTheme;
+    final summary = currentLocation == null
+        ? '請先定位'
+        : currentDistrict == null
+        ? '位置在 18 區範圍外'
+        : report.sameDistrictPeerCount == 0
+        ? '同區未見其他人'
+        : '同區其他 ${report.sameDistrictPeerCount} 人';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: Color(0xFFE7ECE5))),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.stacked_bar_chart_outlined,
+                size: 18,
+                color: Color(0xFF0D7C66),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: LocalizedText(
+                  currentDistrict == null ? '同區人數' : '同區人數 · $currentDistrict',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF17211E),
+                  ),
+                ),
+              ),
+              LocalizedText(
+                summary,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF66756D),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 30,
+            child: report.districtCounts.isEmpty
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: LocalizedText(
+                      '暫未收到區域人數',
+                      style: textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF66756D),
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: report.districtCounts.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final entry = report.districtCounts.entries.elementAt(
+                        index,
+                      );
+                      final isCurrentDistrict =
+                          entry.key == report.currentDistrictName;
+
+                      return Chip(
+                        avatar: Icon(
+                          isCurrentDistrict
+                              ? Icons.my_location
+                              : Icons.person_pin_circle_outlined,
+                          size: 16,
+                        ),
+                        label: LocalizedText('${entry.key} ${entry.value} 人'),
+                        side: BorderSide(
+                          color: isCurrentDistrict
+                              ? const Color(0xFF0D7C66)
+                              : const Color(0xFFD7DED7),
+                        ),
+                        backgroundColor: isCurrentDistrict
+                            ? const Color(0xFFE0F2E9)
+                            : const Color(0xFFFAFBF7),
+                        visualDensity: VisualDensity.compact,
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DistrictCrowdReport {
+  const _DistrictCrowdReport({
+    required this.currentDistrictName,
+    required this.sameDistrictPeerCount,
+    required this.districtCounts,
+  });
+
+  factory _DistrictCrowdReport.from({
+    required List<RadarContact> contacts,
+    required DeviceLocation? currentLocation,
+  }) {
+    final currentDistrictName = currentLocation == null
+        ? null
+        : _districtNameForLocation(currentLocation);
+    final counts = <String, int>{};
+    var sameDistrictPeerCount = 0;
+
+    for (final contact in contacts) {
+      final districtName = _districtNameForLocation(contact.location);
+      if (districtName == null) {
+        continue;
+      }
+
+      counts[districtName] = (counts[districtName] ?? 0) + 1;
+      if (!contact.isMe && districtName == currentDistrictName) {
+        sameDistrictPeerCount += 1;
+      }
+    }
+
+    final orderedEntries = counts.entries.toList()
+      ..sort((a, b) {
+        if (a.key == currentDistrictName && b.key != currentDistrictName) {
+          return -1;
+        }
+        if (b.key == currentDistrictName && a.key != currentDistrictName) {
+          return 1;
+        }
+
+        final countCompare = b.value.compareTo(a.value);
+        if (countCompare != 0) {
+          return countCompare;
+        }
+
+        return _districtOrder(a.key).compareTo(_districtOrder(b.key));
+      });
+
+    return _DistrictCrowdReport(
+      currentDistrictName: currentDistrictName,
+      sameDistrictPeerCount: sameDistrictPeerCount,
+      districtCounts: Map.unmodifiable(Map.fromEntries(orderedEntries)),
+    );
+  }
+
+  final String? currentDistrictName;
+  final int sameDistrictPeerCount;
+  final Map<String, int> districtCounts;
+}
+
+List<RadarContact> _closestRadarContacts({
+  required List<RadarContact> contacts,
+  required DeviceLocation? currentLocation,
+  required int limit,
+}) {
+  if (currentLocation == null) {
+    return const <RadarContact>[];
+  }
+
+  final closestContacts = contacts.where((contact) => !contact.isMe).toList()
+    ..sort((a, b) {
+      final distanceCompare = a
+          .distanceFrom(currentLocation)
+          .compareTo(b.distanceFrom(currentLocation));
+      if (distanceCompare != 0) {
+        return distanceCompare;
+      }
+      return a.name.compareTo(b.name);
+    });
+
+  return List.unmodifiable(closestContacts.take(limit));
+}
+
+String _radarMapSignature({
+  required DeviceLocation? location,
+  required List<RadarContact> contacts,
+  required List<MeshRadarActivity> activities,
+  required Set<String> nearbyContactIds,
+  required String? selectedContactId,
+}) {
+  final buffer = StringBuffer();
+  buffer.write('selected=');
+  buffer.write(selectedContactId ?? '');
+  buffer.write('|me=');
+  _writeLocationSignature(buffer, location);
+
+  final sortedNearbyIds = nearbyContactIds.toList()..sort();
+  buffer.write('|near=');
+  buffer.write(sortedNearbyIds.join(','));
+
+  final sortedContacts = contacts.toList()
+    ..sort((left, right) => left.id.compareTo(right.id));
+  for (final contact in sortedContacts) {
+    buffer
+      ..write('|contact=')
+      ..write(contact.id)
+      ..write(':')
+      ..write(contact.name)
+      ..write(':')
+      ..write(contact.isMe ? '1' : '0')
+      ..write(':')
+      ..write(contact.isSosActive ? '1' : '0')
+      ..write(':')
+      ..write(nearbyContactIds.contains(contact.id) ? '1' : '0')
+      ..write(':');
+    _writeLocationSignature(buffer, contact.location);
+  }
+
+  final sortedActivities = activities.toList()
+    ..sort((left, right) => left.id.compareTo(right.id));
+  for (final activity in sortedActivities) {
+    buffer
+      ..write('|activity=')
+      ..write(activity.id)
+      ..write(':')
+      ..write(activity.type)
+      ..write(':')
+      ..write(activity.title)
+      ..write(':');
+    _writeLocationSignature(buffer, activity.location);
+  }
+
+  return buffer.toString();
+}
+
+void _writeLocationSignature(StringBuffer buffer, DeviceLocation? location) {
+  if (location == null) {
+    buffer.write('none');
+    return;
+  }
+
+  buffer
+    ..write(location.latitude.toStringAsFixed(6))
+    ..write(',')
+    ..write(location.longitude.toStringAsFixed(6))
+    ..write(',')
+    ..write(location.accuracyMeters.toStringAsFixed(1));
+}
+
+class _RadarActivityFallbackMarkers extends StatelessWidget {
+  const _RadarActivityFallbackMarkers({
+    required this.activities,
+    required this.onOpenActivity,
+  });
+
+  final List<MeshRadarActivity> activities;
+  final ValueChanged<MeshRadarActivity> onOpenActivity;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: [
+            for (var index = 0; index < activities.length; index += 1)
+              _positionedMarker(constraints, activities[index], index),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _positionedMarker(
+    BoxConstraints constraints,
+    MeshRadarActivity activity,
+    int index,
+  ) {
+    const west = 113.80;
+    const east = 114.52;
+    const north = 22.565;
+    const south = 22.14;
+    final x = ((activity.location.longitude - west) / (east - west)).clamp(
+      0.0,
+      1.0,
+    );
+    final y = ((north - activity.location.latitude) / (north - south)).clamp(
+      0.0,
+      1.0,
+    );
+    final offset = (index % 3) * 5.0;
+    final left = (x * constraints.maxWidth - 20 + offset).clamp(
+      0.0,
+      constraints.maxWidth - 40,
+    );
+    final top = (y * constraints.maxHeight - 20 + offset).clamp(
+      36.0,
+      constraints.maxHeight - 40,
+    );
+    final color = _radarActivityColor(activity.type);
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: IconButton.filled(
+        key: ValueKey('radar-fallback-activity-${activity.id}'),
+        tooltip: _localizedUiText(
+          '${activity.localizedTypeLabel}活動：${activity.title}',
+        ),
+        onPressed: () => onOpenActivity(activity),
+        style: IconButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          fixedSize: const Size(40, 40),
+          padding: EdgeInsets.zero,
+        ),
+        icon: Icon(_radarActivityIcon(activity.type), size: 20),
+      ),
+    );
+  }
+}
+
+class _OfflineHongKongMap extends StatefulWidget {
+  const _OfflineHongKongMap({
+    required this.location,
+    required this.contacts,
+    required this.activities,
+    required this.nearbyContactIds,
+    required this.refreshSignature,
+    required this.locationFocusVersion,
+    required this.selectedContactId,
+    required this.selectedContactFocusVersion,
+    required this.onSelectedContactChanged,
+    required this.onQuoteContactName,
+  });
+
+  final DeviceLocation? location;
+  final List<RadarContact> contacts;
+  final List<MeshRadarActivity> activities;
+  final Set<String> nearbyContactIds;
+  final String refreshSignature;
+  final int locationFocusVersion;
+  final String? selectedContactId;
+  final int selectedContactFocusVersion;
+  final ValueChanged<String?> onSelectedContactChanged;
+  final ValueChanged<String> onQuoteContactName;
+
+  @override
+  State<_OfflineHongKongMap> createState() => _OfflineHongKongTileMapState();
+}
+
+/// Offline map backed by a real XYZ tile pyramid. The legacy image renderer
+/// below remains in the source as a compatibility fallback for installations
+/// that have not imported the tile bundle yet.
+class _OfflineHongKongTileMapState extends State<_OfflineHongKongMap> {
+  final MapController _mapController = MapController();
+  late Future<bool> _hasOfflineTiles;
+  var _pendingLocationFocus = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _hasOfflineTiles = _checkOfflineTiles();
+  }
+
+  Future<bool> _checkOfflineTiles() async {
+    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+    final assets = manifest.listAssets();
+    bool containsZoom(int zoom) => assets.any(
+      (asset) =>
+          asset.startsWith('$_hongKongOfflineTilePrefix$zoom/') &&
+          asset.endsWith('.png'),
+    );
+    return containsZoom(_hongKongOfflineMinZoom) &&
+        containsZoom(_hongKongOfflineMaxNativeZoom);
+  }
+
+  LatLng get _center => widget.location == null
+      ? const LatLng(_hongKongCenterLatitude, _hongKongCenterLongitude)
+      : LatLng(widget.location!.latitude, widget.location!.longitude);
+
+  void _focus(LatLng point) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _mapController.move(point, 17);
+    });
+  }
+
+  void _focusMeetup() {
+    _mapController.move(
+      const LatLng(_wongTaiSinMeetupLatitude, _wongTaiSinMeetupLongitude),
+      17,
+    );
+    widget.onSelectedContactChanged(null);
+  }
+
+  @override
+  void didUpdateWidget(covariant _OfflineHongKongMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.locationFocusVersion != oldWidget.locationFocusVersion) {
+      _pendingLocationFocus = true;
+      if (widget.location != null) {
+        _pendingLocationFocus = false;
+        _focus(_latLng(widget.location!));
+      }
+      return;
+    }
+    if (_pendingLocationFocus && widget.location != null) {
+      _pendingLocationFocus = false;
+      _focus(_latLng(widget.location!));
+      return;
+    }
+    if (widget.selectedContactFocusVersion !=
+        oldWidget.selectedContactFocusVersion) {
+      final selected = widget.contacts.where(
+        (contact) => contact.id == widget.selectedContactId,
+      );
+      _focus(selected.isNotEmpty ? _latLng(selected.first.location) : _center);
+    }
+  }
+
+  LatLng _latLng(DeviceLocation location) =>
+      LatLng(location.latitude, location.longitude);
+
+  RadarContact? get _selectedContact {
+    for (final contact in widget.contacts) {
+      if (contact.id == widget.selectedContactId) return contact;
+    }
+    return null;
+  }
+
+  void _changeZoom(double delta) {
+    final camera = _mapController.camera;
+    _mapController.move(
+      camera.center,
+      (camera.zoom + delta)
+          .clamp(_hongKongOfflineMinZoom, _hongKongOfflineMaxZoom)
+          .toDouble(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  List<Marker> _markers() {
+    final contacts = <RadarContact>[...widget.contacts];
+    if (widget.location != null && !contacts.any((contact) => contact.isMe)) {
+      contacts.insert(
+        0,
+        RadarContact(
+          id: 'current-device',
+          name: '目前位置',
+          location: widget.location!,
+          isMe: true,
+          isSosActive: false,
+          lastSeen: DateTime.now(),
+        ),
+      );
+    }
+    final markers = contacts.map((contact) {
+      final selected = contact.id == widget.selectedContactId;
+      final color = contact.isSosActive
+          ? const Color(0xFFB00020)
+          : contact.isMe
+          ? const Color(0xFF0D7C66)
+          : selected
+          ? const Color(0xFFEF6C00)
+          : const Color(0xFF1565C0);
+      return Marker(
+        point: _latLng(contact.location),
+        width: 126,
+        height: 52,
+        alignment: Alignment.topCenter,
+        child: GestureDetector(
+          onTap: contact.isMe
+              ? null
+              : () => widget.onSelectedContactChanged(contact.id),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.location_on, size: 36, color: color),
+              Flexible(
+                child: DecoratedBox(
+                  decoration: const BoxDecoration(color: Color(0xCCFFFFFF)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: LocalizedText(
+                      contact.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }).toList();
+    markers.addAll(
+      widget.activities.map((activity) {
+        final color = _radarActivityColor(activity.type);
+        return Marker(
+          point: _latLng(activity.location),
+          width: 142,
+          height: 64,
+          alignment: Alignment.topCenter,
+          child: GestureDetector(
+            key: ValueKey('radar-activity-marker-${activity.id}'),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _showRadarActivityDetails(
+              context,
+              activity,
+              widget.onQuoteContactName,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(_radarActivityIcon(activity.type), size: 34, color: color),
+                Flexible(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0xEEFFFFFF),
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(color: color),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: LocalizedText(
+                        '${activity.localizedTypeLabel} · ${activity.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        softWrap: false,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+    markers.add(
+      Marker(
+        point: const LatLng(
+          _wongTaiSinMeetupLatitude,
+          _wongTaiSinMeetupLongitude,
+        ),
+        width: 92,
+        height: 58,
+        alignment: Alignment.topCenter,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _focusMeetup,
+          child: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.groups, size: 34, color: Color(0xFFF9A825)),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xEEFFF8E1),
+                  borderRadius: BorderRadius.all(Radius.circular(4)),
+                ),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  child: LocalizedText(
+                    _wongTaiSinMeetupName,
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    return markers;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _hasOfflineTiles,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 10),
+                LocalizedText('正在載入香港離線地圖…'),
+              ],
+            ),
+          );
+        }
+        if (snapshot.data != true) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.asset(
+                widget.location == null
+                    ? 'assets/images/hong_kong_18_districts.jpg'
+                    : _districtMapAsset(
+                        _districtNameForLocation(widget.location!) ?? '中西區',
+                      ),
+                key: const ValueKey('offline-hong-kong-18-district-map'),
+                fit: BoxFit.contain,
+              ),
+              const Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Chip(label: LocalizedText('未匯入街道瓦片：目前顯示概覽圖')),
+                ),
+              ),
+              _RadarActivityFallbackMarkers(
+                activities: widget.activities,
+                onOpenActivity: (activity) => _showRadarActivityDetails(
+                  context,
+                  activity,
+                  widget.onQuoteContactName,
+                ),
+              ),
+            ],
+          );
+        }
+        final selectedContact = _selectedContact;
+        return Stack(
+          children: [
+            FlutterMap(
+              key: const ValueKey('offline-hong-kong-18-district-map'),
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _center,
+                initialZoom: widget.location == null ? 10.5 : 14,
+                minZoom: _hongKongOfflineMinZoom.toDouble(),
+                maxZoom: _hongKongOfflineMaxZoom.toDouble(),
+                cameraConstraint: CameraConstraint.containCenter(
+                  bounds: LatLngBounds(
+                    const LatLng(22.565, 114.52),
+                    const LatLng(22.14, 113.80),
+                  ),
+                ),
+                onTap: (_, _) => widget.onSelectedContactChanged(null),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: _hongKongOfflineTileTemplate,
+                  tileProvider: AssetTileProvider(),
+                  minNativeZoom: _hongKongOfflineMinZoom,
+                  maxNativeZoom: _hongKongOfflineMaxNativeZoom,
+                  panBuffer: 0,
+                  tileBounds: LatLngBounds(
+                    const LatLng(22.565, 114.52),
+                    const LatLng(22.14, 113.80),
+                  ),
+                  errorImage: const AssetImage(
+                    'assets/images/hong_kong_18_districts.jpg',
+                  ),
+                ),
+                TileLayer(
+                  urlTemplate: _hongKongOfflineTileTemplate,
+                  tileProvider: AssetTileProvider(),
+                  minZoom: _kowloonOfflineDetailZoom.toDouble(),
+                  minNativeZoom: _kowloonOfflineDetailZoom,
+                  maxNativeZoom: _kowloonOfflineDetailZoom,
+                  panBuffer: 0,
+                  tileBounds: LatLngBounds(
+                    const LatLng(_kowloonDetailNorth, _kowloonDetailEast),
+                    const LatLng(_kowloonDetailSouth, _kowloonDetailWest),
+                  ),
+                ),
+                TileLayer(
+                  urlTemplate: _hongKongOfflineTileTemplate,
+                  tileProvider: AssetTileProvider(),
+                  minZoom: _wongTaiSinOfflineDetailZoom.toDouble(),
+                  minNativeZoom: _wongTaiSinOfflineDetailZoom,
+                  maxNativeZoom: _wongTaiSinOfflineDetailZoom,
+                  panBuffer: 0,
+                  tileBounds: LatLngBounds(
+                    const LatLng(_wongTaiSinDetailNorth, _wongTaiSinDetailEast),
+                    const LatLng(_wongTaiSinDetailSouth, _wongTaiSinDetailWest),
+                  ),
+                ),
+                MarkerLayer(markers: _markers()),
+              ],
+            ),
+            Positioned(
+              right: 8,
+              top: 8,
+              child: Column(
+                children: [
+                  IconButton.filledTonal(
+                    tooltip: _localizedUiText('放大地圖'),
+                    onPressed: () => _changeZoom(1),
+                    icon: const Icon(Icons.add),
+                  ),
+                  const SizedBox(height: 4),
+                  IconButton.filledTonal(
+                    tooltip: _localizedUiText('縮小地圖'),
+                    onPressed: () => _changeZoom(-1),
+                    icon: const Icon(Icons.remove),
+                  ),
+                ],
+              ),
+            ),
+            const Positioned(
+              left: 6,
+              bottom: 4,
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: Color(0xCCFFFFFF)),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: LocalizedText(
+                    '© OpenStreetMap contributors',
+                    style: TextStyle(fontSize: 9, color: Color(0xFF33423B)),
+                  ),
+                ),
+              ),
+            ),
+            if (selectedContact != null && !selectedContact.isMe)
+              Positioned(
+                right: 8,
+                bottom: 24,
+                child: _MapContactQuoteAction(
+                  contact: selectedContact,
+                  onQuoteContactName: widget.onQuoteContactName,
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// Retained temporarily so older image-map behaviour can be compared or
+// restored while tile bundles are rolled out to existing installations.
+// ignore: unused_element
+class _OfflineHongKongMapState extends State<_OfflineHongKongMap> {
+  final TransformationController _transformationController =
+      TransformationController();
+  String? _selectedDistrictName;
+  String? _mapScopeKey;
+
+  @override
+  void didUpdateWidget(covariant _OfflineHongKongMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (widget.locationFocusVersion != oldWidget.locationFocusVersion) {
+      _selectedDistrictName = null;
+      _mapScopeKey = null;
+    }
+
+    final selectedContactId = widget.selectedContactId;
+    final nextDistrictName = widget.location == null
+        ? null
+        : _districtNameForLocation(widget.location!);
+    final oldDistrictName = oldWidget.location == null
+        ? null
+        : _districtNameForLocation(oldWidget.location!);
+    if (nextDistrictName != oldDistrictName) {
+      _selectedDistrictName = null;
+      _mapScopeKey = null;
+    }
+
+    if (selectedContactId == null) {
+      return;
+    }
+
+    final stillVisible = widget.contacts.any(
+      (contact) => contact.id == selectedContactId,
+    );
+    if (!stillVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.onSelectedContactChanged(null);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _transformationController.dispose();
+    super.dispose();
+  }
+
+  void _handleMapTap(
+    Offset viewportPoint,
+    Size mapSize,
+    _MapBounds mapBounds,
+    List<_DistrictShape> visibleDistricts,
+  ) {
+    final scenePoint = _transformationController.toScene(viewportPoint);
+    final mapRect = _fitMapRect((Offset.zero & mapSize).deflate(10), mapBounds);
+    final contact = _contactAt(scenePoint, mapRect, mapBounds);
+    if (contact != null) {
+      widget.onSelectedContactChanged(contact.id);
+      return;
+    }
+
+    final districtName = _districtAt(scenePoint, mapRect, mapBounds);
+    final visibleDistrictNames = visibleDistricts
+        .map((district) => district.name)
+        .toSet();
+    if (districtName != null) {
+      if (!visibleDistrictNames.contains(districtName)) {
+        widget.onSelectedContactChanged(null);
+        return;
+      }
+      widget.onSelectedContactChanged(null);
+      setState(() {
+        _selectedDistrictName = districtName;
+        _mapScopeKey = null;
+      });
+      return;
+    }
+
+    widget.onSelectedContactChanged(null);
+  }
+
+  RadarContact? _contactAt(
+    Offset scenePoint,
+    Rect mapRect,
+    _MapBounds mapBounds,
+  ) {
+    final contacts = widget.contacts;
+    if (contacts.isEmpty) {
+      return null;
+    }
+
+    final scale = max(1.0, _transformationController.value.getMaxScaleOnAxis());
+    final hitRadius = max(12.0, 34.0 / scale);
+    RadarContact? nearest;
+    var nearestDistance = double.infinity;
+
+    for (final contact in contacts) {
+      if (!mapBounds.containsLocation(contact.location)) {
+        continue;
+      }
+      final point = _projectLocationToMap(contact.location, mapRect, mapBounds);
+      final distance = (point - scenePoint).distance;
+      if (distance <= hitRadius && distance < nearestDistance) {
+        nearest = contact;
+        nearestDistance = distance;
+      }
+    }
+
+    return nearest;
+  }
+
+  String? _districtAt(Offset scenePoint, Rect mapRect, _MapBounds mapBounds) {
+    if (!mapRect.contains(scenePoint)) {
+      return null;
+    }
+
+    return _districtNameForPoint(
+      _unprojectMapPoint(scenePoint, mapRect, mapBounds),
+    );
+  }
+
+  RadarContact? _contactById(String contactId) {
+    for (final contact in widget.contacts) {
+      if (contact.id == contactId) {
+        return contact;
+      }
+    }
+    return null;
+  }
+
+  RadarContact? get _selectedContact {
+    final selectedContactId = widget.selectedContactId;
+    if (selectedContactId == null) {
+      return null;
+    }
+    return _contactById(selectedContactId);
+  }
+
+  void _selectDistrict(String districtName) {
+    widget.onSelectedContactChanged(null);
+    setState(() {
+      _selectedDistrictName = districtName;
+      _mapScopeKey = null;
+    });
+  }
+
+  void _scheduleMapScopeReset(String nextScopeKey) {
+    if (_mapScopeKey == nextScopeKey) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _mapScopeKey == nextScopeKey) {
+        return;
+      }
+      _transformationController.value = Matrix4.identity();
+      _mapScopeKey = nextScopeKey;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentDistrictName = widget.location == null
+        ? null
+        : _districtNameForLocation(widget.location!);
+    final activeDistrictName = _selectedDistrictName ?? currentDistrictName;
+    final visibleDistricts = _localizedDistrictsForDistrict(activeDistrictName);
+    final activeDistrict = activeDistrictName == null
+        ? null
+        : _districtByName(activeDistrictName);
+    final mapBounds = activeDistrict == null
+        ? _MapBounds.hongKong
+        : _mapBoundsForDistricts([activeDistrict]) ?? _MapBounds.hongKong;
+    final mapScopeKey = activeDistrictName ?? 'hong-kong-18-districts';
+    final mapAsset = activeDistrictName == null
+        ? 'assets/images/hong_kong_18_districts.jpg'
+        : _districtMapAsset(activeDistrictName);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final viewportSize = Size(
+            constraints.maxWidth,
+            constraints.maxHeight,
+          );
+          final mapSize = viewportSize;
+          _scheduleMapScopeReset(mapScopeKey);
+
+          final selectedContact = _selectedContact;
+
+          return Stack(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) => _handleMapTap(
+                  details.localPosition,
+                  mapSize,
+                  mapBounds,
+                  visibleDistricts,
+                ),
+                child: InteractiveViewer(
+                  transformationController: _transformationController,
+                  minScale: 1,
+                  maxScale: 24,
+                  boundaryMargin: const EdgeInsets.all(1600),
+                  constrained: false,
+                  child: SizedBox(
+                    width: mapSize.width,
+                    height: mapSize.height,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.asset(
+                          mapAsset,
+                          key: const ValueKey(
+                            'offline-hong-kong-18-district-map',
+                          ),
+                          fit: BoxFit.contain,
+                          filterQuality: FilterQuality.medium,
+                          semanticLabel: _localizedUiText('香港十八區離線地圖'),
+                        ),
+                        CustomPaint(
+                          painter: _HongKongMapPainter(
+                            location: widget.location,
+                            contacts: widget.contacts,
+                            nearbyContactIds: widget.nearbyContactIds,
+                            refreshSignature: widget.refreshSignature,
+                            selectedContactId: widget.selectedContactId,
+                            currentDistrictName: activeDistrictName,
+                            visibleDistricts: visibleDistricts,
+                            mapBounds: mapBounds,
+                            textScaler: MediaQuery.textScalerOf(context),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              if (activeDistrictName != null)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  right: 8,
+                  child: IgnorePointer(
+                    child: _MapDistrictFocusBanner(
+                      currentDistrictName: activeDistrictName,
+                    ),
+                  ),
+                ),
+              if (selectedContact != null &&
+                  !selectedContact.isMe &&
+                  mapBounds.containsLocation(selectedContact.location))
+                Positioned(
+                  right: 8,
+                  bottom: visibleDistricts.length > 1 ? 78 : 8,
+                  child: _MapContactQuoteAction(
+                    contact: selectedContact,
+                    onQuoteContactName: widget.onQuoteContactName,
+                  ),
+                ),
+              if (visibleDistricts.length > 1)
+                Positioned(
+                  left: 8,
+                  right: 8,
+                  bottom: 8,
+                  height: 62,
+                  child: Row(
+                    children: [
+                      for (final district in visibleDistricts)
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 3),
+                            child: _DistrictMapThumbnail(
+                              district: district,
+                              selected: district.name == activeDistrictName,
+                              onTap: () => _selectDistrict(district.name),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DistrictMapThumbnail extends StatelessWidget {
+  const _DistrictMapThumbnail({
+    required this.district,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _DistrictShape district;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: selected ? const Color(0xFF0D7C66) : Colors.white,
+          width: selected ? 3 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(_districtMapAsset(district.name), fit: BoxFit.cover),
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: ColoredBox(
+                color: selected
+                    ? const Color(0xE60D7C66)
+                    : const Color(0xC9000000),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: LocalizedText(
+                      district.name,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OnlineGoogleRadarMap extends StatefulWidget {
+  const _OnlineGoogleRadarMap({
+    super.key,
+    required this.enabled,
+    required this.apiKey,
+    required this.mapId,
+    required this.displayName,
+    required this.location,
+    required this.contacts,
+    required this.activities,
+    required this.nearbyContactIds,
+    required this.locationFocusVersion,
+    required this.selectedContactId,
+    required this.selectedContactFocusVersion,
+    required this.onSelectedContactChanged,
+    required this.onQuoteContactName,
+  });
+
+  final bool enabled;
+  final String apiKey;
+  final String mapId;
+  final String displayName;
+  final DeviceLocation? location;
+  final List<RadarContact> contacts;
+  final List<MeshRadarActivity> activities;
+  final Set<String> nearbyContactIds;
+  final int locationFocusVersion;
+  final String? selectedContactId;
+  final int selectedContactFocusVersion;
+  final ValueChanged<String?> onSelectedContactChanged;
+  final ValueChanged<String> onQuoteContactName;
+
+  @override
+  State<_OnlineGoogleRadarMap> createState() => _OnlineGoogleRadarMapState();
+}
+
+class _OnlineGoogleRadarMapState extends State<_OnlineGoogleRadarMap> {
+  WebViewController? _controller;
+  Timer? _loadTimeoutTimer;
+  var _progress = 0;
+  var _pageReady = false;
+  var _mapReady = false;
+  String? _mapError;
+
+  @override
+  void initState() {
+    super.initState();
+    _configureController();
+  }
+
+  @override
+  void dispose() {
+    _loadTimeoutTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _OnlineGoogleRadarMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.enabled != widget.enabled ||
+        oldWidget.apiKey != widget.apiKey ||
+        oldWidget.mapId != widget.mapId) {
+      _configureController();
+      return;
+    }
+
+    _pushRadarState();
+  }
+
+  void _configureController() {
+    _loadTimeoutTimer?.cancel();
+    _pageReady = false;
+    _mapReady = false;
+    _mapError = null;
+    _progress = 0;
+
+    if (!_canUseWebView || widget.apiKey.isEmpty) {
+      _controller = null;
+      return;
+    }
+
+    final controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..addJavaScriptChannel(
+        'RadarBridge',
+        onMessageReceived: (message) {
+          _handleRadarBridgeMessage(message.message);
+        },
+      )
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onProgress: (progress) {
+            if (mounted) {
+              setState(() => _progress = progress);
+            }
+          },
+          onPageFinished: (_) {
+            _pageReady = true;
+            if (mounted) {
+              setState(() => _progress = 100);
+            }
+            _pushRadarState();
+          },
+        ),
+      );
+
+    _controller = controller;
+    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
+      _setMapError('Google Map 載入逾時，請檢查外網、API key 或稍後再試。');
+    });
+    unawaited(
+      controller.loadHtmlString(
+        _googleRadarMapHtml(
+          apiKey: widget.apiKey,
+          mapId: widget.mapId,
+          initialStateJson: _radarStateJson(),
+        ),
+        baseUrl: _aiecoWebUrl,
+      ),
+    );
+  }
+
+  void _handleRadarBridgeMessage(String payload) {
+    final trimmed = payload.trim();
+    if (trimmed.isEmpty) {
+      widget.onSelectedContactChanged(null);
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is Map) {
+        final action = decoded['action']?.toString();
+        final contactId = decoded['contactId']?.toString() ?? '';
+        switch (action) {
+          case 'mapReady':
+            _setMapReady();
+            return;
+          case 'mapError':
+            _setMapError(
+              decoded['message']?.toString() ?? 'Google Map 未能載入，請切換離線地圖後再試。',
+            );
+            return;
+          case 'quote':
+            final contact = _contactById(contactId);
+            if (contact != null && !contact.isMe) {
+              widget.onQuoteContactName(contact.name);
+              return;
+            }
+            final activity = _activityById(contactId);
+            if (activity != null) {
+              widget.onQuoteContactName(activity.hostName);
+            }
+            return;
+          case 'activity':
+            final activity = _activityById(contactId);
+            if (activity != null && mounted) {
+              _showRadarActivityDetails(
+                context,
+                activity,
+                widget.onQuoteContactName,
+              );
+            }
+            return;
+          case 'select':
+            final activity = _activityById(contactId);
+            if (activity != null && mounted) {
+              _showRadarActivityDetails(
+                context,
+                activity,
+                widget.onQuoteContactName,
+              );
+              return;
+            }
+            widget.onSelectedContactChanged(
+              contactId.isEmpty ? null : contactId,
+            );
+            return;
+        }
+      }
+    } on Object {
+      // Older WebView messages used the raw contact id.
+    }
+
+    widget.onSelectedContactChanged(trimmed);
+  }
+
+  void _retryMap() {
+    setState(_configureController);
+  }
+
+  void _setMapReady() {
+    _loadTimeoutTimer?.cancel();
+    if (!mounted || _mapReady) {
+      return;
+    }
+
+    setState(() {
+      _mapReady = true;
+      _mapError = null;
+    });
+  }
+
+  void _setMapError(String message) {
+    if (!mounted || _mapReady) {
+      return;
+    }
+
+    _loadTimeoutTimer?.cancel();
+    setState(() {
+      _mapError = message;
+      _progress = 100;
+    });
+  }
+
+  bool get _canUseWebView {
+    return widget.enabled && (Platform.isAndroid || Platform.isIOS);
+  }
+
+  void _pushRadarState() {
+    final controller = _controller;
+    if (!_pageReady || controller == null) {
+      return;
+    }
+
+    final stateJson = _radarStateJson();
+    unawaited(controller.runJavaScript('window.setRadarState($stateJson);'));
+  }
+
+  String _radarStateJson() {
+    return jsonEncode(_radarState());
+  }
+
+  Map<String, Object?> _radarState() {
+    final contacts = widget.contacts
+        .map((contact) => _contactToMap(contact))
+        .toList();
+    final hasMe = contacts.any((contact) => contact['isMe'] == true);
+    final location = widget.location;
+    if (!hasMe && location != null) {
+      contacts.insert(0, _locationToMap(location));
+    }
+    contacts.addAll(widget.activities.map(_activityToMap));
+    contacts.add(<String, Object?>{
+      'id': _wongTaiSinMeetupId,
+      'name': _wongTaiSinMeetupName,
+      'lat': _wongTaiSinMeetupLatitude,
+      'lng': _wongTaiSinMeetupLongitude,
+      'accuracyMeters': 0.0,
+      'isMe': false,
+      'isSosActive': false,
+      'isNearby': false,
+      'isMeetup': true,
+      'district': _localizedUiText('黃大仙區'),
+    });
+
+    final center = location == null
+        ? const <String, double>{
+            'lat': _hongKongCenterLatitude,
+            'lng': _hongKongCenterLongitude,
+          }
+        : <String, double>{'lat': location.latitude, 'lng': location.longitude};
+
+    return <String, Object?>{
+      'center': center,
+      'hasLocation': location != null,
+      'contacts': contacts,
+      'locationFocusVersion': widget.locationFocusVersion,
+      'selectedContactId': widget.selectedContactId,
+      'selectedContactFocusVersion': widget.selectedContactFocusVersion,
+    };
+  }
+
+  Map<String, Object?> _contactToMap(RadarContact contact) {
+    return <String, Object?>{
+      'id': contact.id,
+      'name': contact.isMe ? '${contact.name}（我）' : contact.name,
+      'lat': contact.location.latitude,
+      'lng': contact.location.longitude,
+      'accuracyMeters': contact.location.accuracyMeters,
+      'isMe': contact.isMe,
+      'isSosActive': contact.isSosActive,
+      'isNearby': widget.nearbyContactIds.contains(contact.id),
+      'district': _localizedUiText(
+        _districtNameForLocation(contact.location) ?? '未知區域',
+      ),
+    };
+  }
+
+  Map<String, Object?> _locationToMap(DeviceLocation location) {
+    return <String, Object?>{
+      'id': 'current-device',
+      'name': '${widget.displayName}（我）',
+      'lat': location.latitude,
+      'lng': location.longitude,
+      'accuracyMeters': location.accuracyMeters,
+      'isMe': true,
+      'isSosActive': false,
+      'isNearby': false,
+      'district': _localizedUiText(
+        _districtNameForLocation(location) ?? '未知區域',
+      ),
+    };
+  }
+
+  Map<String, Object?> _activityToMap(MeshRadarActivity activity) {
+    final color = _radarActivityColor(activity.type);
+    return <String, Object?>{
+      'id': activity.id,
+      'name': activity.title,
+      'lat': activity.location.latitude,
+      'lng': activity.location.longitude,
+      'accuracyMeters': 0.0,
+      'isMe': false,
+      'isSosActive': false,
+      'isNearby': false,
+      'isActivity': true,
+      'activityType': _localizedUiText(activity.localizedTypeLabel),
+      'activityDetails': _localizedUiText(
+        activity.details.isEmpty ? '未提供活動詳情。' : activity.details,
+      ),
+      'hostName': activity.hostName,
+      'activityColor':
+          '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2)}',
+      'district': _localizedUiText(
+        _districtNameForLocation(activity.location) ?? '未知區域',
+      ),
+    };
+  }
+
+  RadarContact? _contactById(String selectedContactId) {
+    for (final contact in widget.contacts) {
+      if (contact.id == selectedContactId) {
+        return contact;
+      }
+    }
+    return null;
+  }
+
+  MeshRadarActivity? _activityById(String activityId) {
+    for (final activity in widget.activities) {
+      if (activity.id == activityId) {
+        return activity;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.apiKey.isEmpty) {
+      return const _GoogleMapUnavailable(
+        icon: Icons.key_outlined,
+        title: '未設定 Google Maps API key',
+        message: '用 --dart-define=GOOGLE_MAPS_API_KEY=你的_key 建置後可使用線上地圖。',
+      );
+    }
+
+    if (!_canUseWebView) {
+      return const _GoogleMapUnavailable(
+        icon: Icons.public_off,
+        title: '線上地圖未啟用',
+        message: '目前平台或測試建置未開啟 WebView，請使用離線地圖。',
+      );
+    }
+
+    final controller = _controller;
+    if (controller == null) {
+      return const _GoogleMapUnavailable(
+        icon: Icons.map_outlined,
+        title: '正在準備線上地圖',
+        message: 'Google Map 初始化中。',
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: Stack(
+        children: [
+          Positioned.fill(child: WebViewWidget(controller: controller)),
+          if (_mapError != null)
+            Positioned.fill(
+              child: _GoogleMapUnavailable(
+                icon: Icons.map_outlined,
+                title: 'Google Map 載入失敗',
+                message: _mapError!,
+                actionLabel: '重試',
+                onAction: _retryMap,
+              ),
+            ),
+          if (_progress < 100)
+            Positioned(
+              left: 0,
+              top: 0,
+              right: 0,
+              child: LinearProgressIndicator(
+                value: _progress == 0 ? null : _progress / 100,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapContactQuoteAction extends StatelessWidget {
+  const _MapContactQuoteAction({
+    required this.contact,
+    required this.onQuoteContactName,
+  });
+
+  final RadarContact contact;
+  final ValueChanged<String> onQuoteContactName;
+
+  @override
+  Widget build(BuildContext context) {
+    final districtName = _districtNameForLocation(contact.location);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xF7FFFFFF),
+        border: Border.all(color: const Color(0xFFD7DED7)),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x26000000),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 230),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.person_pin_circle, size: 18),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LocalizedText(
+                      contact.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF17211E),
+                      ),
+                    ),
+                    if (districtName != null)
+                      LocalizedText(
+                        districtName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: const Color(0xFF66756D),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              LocalizedTooltip(
+                message: '引用名稱聊天',
+                child: IconButton.filledTonal(
+                  onPressed: () => onQuoteContactName(contact.name),
+                  icon: const Icon(Icons.format_quote, size: 18),
+                  style: IconButton.styleFrom(
+                    fixedSize: const Size(34, 34),
+                    minimumSize: const Size(34, 34),
+                    padding: EdgeInsets.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GoogleMapUnavailable extends StatelessWidget {
+  const _GoogleMapUnavailable({
+    required this.icon,
+    required this.title,
+    required this.message,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8F4),
+        border: Border.all(color: const Color(0xFFD7DED7)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: const Color(0xFF0D7C66), size: 34),
+              const SizedBox(height: 10),
+              LocalizedText(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF17211E),
+                ),
+              ),
+              const SizedBox(height: 6),
+              LocalizedText(
+                message,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF66756D),
+                  height: 1.35,
+                ),
+              ),
+              if (actionLabel != null && onAction != null) ...[
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: onAction,
+                  icon: const Icon(Icons.refresh),
+                  label: LocalizedText(actionLabel!),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _googleRadarMapHtml({
+  required String apiKey,
+  required String mapId,
+  required String initialStateJson,
+}) {
+  final encodedKey = Uri.encodeQueryComponent(apiKey);
+  final mapIdOption = mapId.isEmpty ? '' : ', mapId: ${jsonEncode(mapId)}';
+  final loadingLabel = jsonEncode(_localizedUiText('載入 Google Map'));
+  final sosPrefix = jsonEncode(_localizedUiText('求救 · '));
+  final lightPointLabel = jsonEncode(_localizedUiText('光點'));
+  final meetupLabel = jsonEncode(_localizedUiText('集合點'));
+  final meLabel = jsonEncode(_localizedUiText('我'));
+  final nearbyLabel = jsonEncode(_localizedUiText('近'));
+  final unknownDistrictLabel = jsonEncode(_localizedUiText('未知區域'));
+  final quoteLabel = jsonEncode(_localizedUiText('引用'));
+
+  return '''
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <style>
+    html, body, #map {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #edf3ef;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: #f7f8f4;
+      color: #17211e;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .gm-style .gm-style-iw-c {
+      padding: 8px !important;
+      border-radius: 8px !important;
+    }
+    .gm-style .gm-style-iw-d {
+      overflow: hidden !important;
+    }
+    .gm-ui-hover-effect {
+      width: 24px !important;
+      height: 24px !important;
+    }
+    .gm-ui-hover-effect > span {
+      width: 12px !important;
+      height: 12px !important;
+      margin: 6px !important;
+    }
+    .info {
+      max-width: 176px;
+      color: #17211e;
+      line-height: 1.25;
+      font-size: 12px;
+    }
+    .info-title {
+      font-weight: 800;
+      margin-bottom: 3px;
+      max-width: 142px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .info-meta {
+      color: #66756d;
+      font-size: 11px;
+      max-width: 142px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .info-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .info-copy {
+      min-width: 30px;
+      height: 26px;
+      border: 0;
+      border-radius: 7px;
+      background: #e0f2e9;
+      color: #0d7c66;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 0 7px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="loading"></div>
+  <script>
+    window.__RADAR_STATE__ = $initialStateJson;
+    const ui = {
+      loading: $loadingLabel,
+      sosPrefix: $sosPrefix,
+      lightPoint: $lightPointLabel,
+      meetup: $meetupLabel,
+      me: $meLabel,
+      nearby: $nearbyLabel,
+      unknownDistrict: $unknownDistrictLabel,
+      quote: $quoteLabel
+    };
+    document.getElementById('loading').textContent = ui.loading;
+
+    let map;
+    let infoWindow;
+    let markers = {};
+    let accuracyCircles = {};
+    let markerContacts = {};
+    let lastFocusVersion = -1;
+    let lastLocationFocusVersion = -1;
+    let lastCenterKey = '';
+    let meetupFocused = false;
+    let locationFocused = false;
+    let pendingLocationFocus = false;
+    let mapReadyPosted = false;
+    let mapErrorPosted = false;
+
+    const hongKongCenter = {
+      lat: $_hongKongCenterLatitude,
+      lng: $_hongKongCenterLongitude
+    };
+
+    function initRadarMap() {
+      try {
+        const state = window.__RADAR_STATE__ || {};
+        const center = normalizePosition(state.center) || hongKongCenter;
+        map = new google.maps.Map(document.getElementById('map'), {
+          center,
+          zoom: 11,
+          clickableIcons: false,
+          fullscreenControl: false,
+          mapTypeControl: false,
+          streetViewControl: false,
+          gestureHandling: 'greedy'$mapIdOption
+        });
+        infoWindow = new google.maps.InfoWindow({ maxWidth: 190 });
+        map.addListener('click', () => postSelection(''));
+        google.maps.event.addListenerOnce(map, 'tilesloaded', () => {
+          const loading = document.getElementById('loading');
+          if (loading) {
+            loading.style.display = 'none';
+          }
+          postMapReady();
+        });
+        window.setRadarState(state);
+      } catch (error) {
+        postMapError('Google Map 初始化失敗：' + errorMessage(error));
+      }
+    }
+
+    window.initRadarMap = initRadarMap;
+    window.gm_authFailure = function() {
+      postMapError('Google Maps API key 被拒絕。請檢查 key、Maps JavaScript API、網域或 app 限制。');
+    };
+    window.onerror = function(message, source, lineno, colno, error) {
+      postMapError('Google Map JavaScript 錯誤：' + errorMessage(error || message));
+      return false;
+    };
+    window.handleGoogleMapsScriptError = function() {
+      postMapError('未能下載 Google Maps JavaScript。請檢查網絡、防火牆或 Google 服務是否可連線。');
+    };
+
+    window.setRadarState = function(state) {
+      window.__RADAR_STATE__ = state || {};
+      if (!map || !window.google || !google.maps) {
+        return;
+      }
+      renderRadarState(window.__RADAR_STATE__);
+    };
+
+    function renderRadarState(state) {
+      const contacts = Array.isArray(state.contacts) ? state.contacts : [];
+      const nextIds = new Set();
+      contacts.forEach((contact) => {
+        const id = addOrUpdateContactMarker(contact);
+        if (id) {
+          nextIds.add(id);
+        }
+      });
+      removeMissingMarkers(nextIds);
+
+      const locationFocusVersion = Number(state.locationFocusVersion || 0);
+      if (lastLocationFocusVersion !== locationFocusVersion) {
+        if (lastLocationFocusVersion >= 0) {
+          pendingLocationFocus = true;
+        }
+        meetupFocused = false;
+        lastCenterKey = '';
+        lastLocationFocusVersion = locationFocusVersion;
+      }
+
+      const center = normalizePosition(state.center);
+      if (pendingLocationFocus && state.hasLocation === true && center) {
+        pendingLocationFocus = false;
+        locationFocused = true;
+        map.panTo(center);
+        map.setZoom(17);
+        lastCenterKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
+        infoWindow.close();
+        return;
+      }
+
+      const selectedId = state.selectedContactId
+        ? String(state.selectedContactId)
+        : '';
+      const selectedMarker = selectedId ? markers[selectedId] : null;
+      if (selectedMarker) {
+        meetupFocused = false;
+        locationFocused = false;
+        const focusVersion = Number(state.selectedContactFocusVersion || 0);
+        if (lastFocusVersion !== focusVersion) {
+          map.panTo(selectedMarker.getPosition());
+          map.setZoom(Math.max(map.getZoom() || 11, 16));
+          lastFocusVersion = focusVersion;
+        }
+        openInfo(selectedMarker, markerContacts[selectedId]);
+        return;
+      }
+
+      if (center && locationFocused) {
+        const centerKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
+        if (centerKey !== lastCenterKey) {
+          map.panTo(center);
+          lastCenterKey = centerKey;
+        }
+        if ((map.getZoom() || 0) < 17) {
+          map.setZoom(17);
+        }
+      } else if (center && !meetupFocused) {
+        const centerKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
+        if (centerKey !== lastCenterKey) {
+          map.setCenter(center);
+          lastCenterKey = centerKey;
+          if ((map.getZoom() || 0) > 13) {
+            map.setZoom(11);
+          }
+        }
+      }
+      infoWindow.close();
+    }
+
+    function clearMarkers() {
+      Object.values(markers).forEach((marker) => marker.setMap(null));
+      Object.values(accuracyCircles).forEach((circle) => circle.setMap(null));
+      markers = {};
+      accuracyCircles = {};
+      markerContacts = {};
+    }
+
+    function removeMissingMarkers(nextIds) {
+      Object.keys(markers).forEach((id) => {
+        if (nextIds.has(id)) {
+          return;
+        }
+        markers[id].setMap(null);
+        delete markers[id];
+        delete markerContacts[id];
+        if (accuracyCircles[id]) {
+          accuracyCircles[id].setMap(null);
+          delete accuracyCircles[id];
+        }
+      });
+    }
+
+    function markerOptions(contact, position) {
+      const isMe = contact.isMe === true;
+      const isNearby = contact.isNearby === true;
+      const isSosActive = contact.isSosActive === true;
+      const isMeetup = contact.isMeetup === true;
+      const isActivity = contact.isActivity === true;
+      const activityColor = contact.activityColor
+        ? String(contact.activityColor)
+        : '#0d7c66';
+      return {
+        map,
+        position,
+        title: isActivity
+          ? String(contact.activityType || '') + ' · ' + String(contact.name || '')
+          : isSosActive
+          ? ui.sosPrefix + String(contact.name || ui.lightPoint)
+          : String(contact.name || ui.lightPoint),
+        label: isActivity
+          ? { text: String(contact.activityType || ''), color: '#ffffff', fontWeight: '900' }
+          : isMeetup
+          ? { text: ui.meetup, color: '#5d4037', fontWeight: '900' }
+          : isSosActive
+          ? { text: 'SOS', color: '#ffffff', fontWeight: '900' }
+          : isMe
+          ? { text: ui.me, color: '#ffffff', fontWeight: '800' }
+          : isNearby
+            ? { text: ui.nearby, color: '#ffffff', fontWeight: '800' }
+            : null,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: isActivity ? 13 : isMeetup ? 12 : isSosActive ? 13 : isMe ? 12 : 9,
+          fillColor: isActivity
+            ? activityColor
+            : isSosActive
+            ? '#b00020'
+            : isMeetup ? '#f9a825'
+            : isMe ? '#0d7c66' : isNearby ? '#d73535' : '#1f6feb',
+          fillOpacity: 1,
+          strokeColor: isSosActive ? '#ffdad6' : '#ffffff',
+          strokeWeight: isSosActive || isActivity ? 4 : 3
+        },
+        zIndex: isActivity ? 24 : isMeetup ? 25 : isSosActive ? 30 : isMe ? 20 : isNearby ? 15 : 10
+      };
+    }
+
+    function addOrUpdateContactMarker(contact) {
+      const id = String(contact.id || '');
+      const position = normalizePosition({
+        lat: contact.lat,
+        lng: contact.lng
+      });
+      if (!id || !position) {
+        return '';
+      }
+
+      const isMe = contact.isMe === true;
+      let marker = markers[id];
+      if (marker) {
+        marker.setOptions(markerOptions(contact, position));
+      } else {
+        marker = new google.maps.Marker(markerOptions(contact, position));
+        marker.addListener('click', () => {
+          openInfo(marker, markerContacts[id]);
+          if (markerContacts[id]?.isActivity === true) {
+            meetupFocused = false;
+            locationFocused = false;
+            map.panTo(marker.getPosition());
+            map.setZoom(Math.max(map.getZoom() || 11, 15));
+            postActivity(id);
+            return;
+          }
+          if (markerContacts[id]?.isMeetup === true) {
+            meetupFocused = true;
+            locationFocused = false;
+            map.panTo(marker.getPosition());
+            map.setZoom(Math.max(map.getZoom() || 11, 17));
+            return;
+          }
+          meetupFocused = false;
+          locationFocused = false;
+          postSelection(id);
+        });
+        markers[id] = marker;
+      }
+
+      markerContacts[id] = contact;
+
+      const accuracy = Number(contact.accuracyMeters || 0);
+      if (isMe && Number.isFinite(accuracy) && accuracy > 0) {
+        if (accuracyCircles[id]) {
+          accuracyCircles[id].setOptions({
+            center: position,
+            radius: accuracy
+          });
+        } else {
+          accuracyCircles[id] = new google.maps.Circle({
+            map,
+            center: position,
+            radius: accuracy,
+            strokeColor: '#0d7c66',
+            strokeOpacity: 0.36,
+            strokeWeight: 1,
+            fillColor: '#0d7c66',
+            fillOpacity: 0.12
+          });
+        }
+      } else if (accuracyCircles[id]) {
+        accuracyCircles[id].setMap(null);
+        delete accuracyCircles[id];
+      }
+
+      return id;
+    }
+
+    function openInfo(marker, contact) {
+      if (!contact) {
+        return;
+      }
+      const name = String(contact.name || ui.lightPoint);
+      const isSosActive = contact.isSosActive === true;
+      const isActivity = contact.isActivity === true;
+      const district = contact.district ? String(contact.district) : ui.unknownDistrict;
+      const accuracy = Math.round(Number(contact.accuracyMeters || 0));
+      const meta = isActivity
+        ? String(contact.hostName || '') + (contact.activityDetails
+            ? ' · ' + String(contact.activityDetails)
+            : '')
+        : accuracy > 0
+        ? district + ' · +/- ' + accuracy + 'm'
+        : district;
+
+      const container = document.createElement('div');
+      container.className = 'info';
+
+      const row = document.createElement('div');
+      row.className = 'info-row';
+
+      const text = document.createElement('div');
+      text.style.minWidth = '0';
+
+      const title = document.createElement('div');
+      title.className = 'info-title';
+      title.textContent = isActivity
+        ? String(contact.activityType || '') + ' · ' + name
+        : isSosActive ? ui.sosPrefix + name : name;
+      if (isActivity && contact.activityColor) {
+        title.style.color = String(contact.activityColor);
+      }
+      if (isSosActive) {
+        title.style.color = '#b00020';
+      }
+
+      const metaLine = document.createElement('div');
+      metaLine.className = 'info-meta';
+      metaLine.textContent = meta;
+
+      text.appendChild(title);
+      text.appendChild(metaLine);
+      row.appendChild(text);
+
+      if (contact.isMe !== true && contact.isMeetup !== true) {
+        const quoteButton = document.createElement('button');
+        quoteButton.type = 'button';
+        quoteButton.className = 'info-copy';
+        quoteButton.textContent = ui.quote;
+        quoteButton.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          postQuote(contact.id || '');
+        });
+        row.appendChild(quoteButton);
+      }
+
+      container.appendChild(row);
+      infoWindow.setContent(container);
+      infoWindow.open({ map, anchor: marker });
+    }
+
+    function normalizePosition(value) {
+      if (!value) {
+        return null;
+      }
+      const lat = Number(value.lat);
+      const lng = Number(value.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null;
+      }
+      return { lat, lng };
+    }
+
+    function postSelection(contactId) {
+      if (window.RadarBridge && window.RadarBridge.postMessage) {
+        window.RadarBridge.postMessage(JSON.stringify({
+          action: 'select',
+          contactId: String(contactId || '')
+        }));
+      }
+    }
+
+    function postQuote(contactId) {
+      if (window.RadarBridge && window.RadarBridge.postMessage) {
+        window.RadarBridge.postMessage(JSON.stringify({
+          action: 'quote',
+          contactId: String(contactId || '')
+        }));
+      }
+    }
+
+    function postActivity(activityId) {
+      if (window.RadarBridge && window.RadarBridge.postMessage) {
+        window.RadarBridge.postMessage(JSON.stringify({
+          action: 'activity',
+          contactId: String(activityId || '')
+        }));
+      }
+    }
+
+    function postMapReady() {
+      if (mapReadyPosted || mapErrorPosted) {
+        return;
+      }
+      mapReadyPosted = true;
+      if (window.RadarBridge && window.RadarBridge.postMessage) {
+        window.RadarBridge.postMessage(JSON.stringify({
+          action: 'mapReady'
+        }));
+      }
+    }
+
+    function postMapError(message) {
+      if (mapReadyPosted || mapErrorPosted) {
+        return;
+      }
+      mapErrorPosted = true;
+      const loading = document.getElementById('loading');
+      if (loading) {
+        loading.textContent = message || 'Google Map 載入失敗';
+      }
+      if (window.RadarBridge && window.RadarBridge.postMessage) {
+        window.RadarBridge.postMessage(JSON.stringify({
+          action: 'mapError',
+          message: message || 'Google Map 載入失敗'
+        }));
+      }
+    }
+
+    function errorMessage(error) {
+      if (!error) {
+        return '未知錯誤';
+      }
+      if (typeof error === 'string') {
+        return error;
+      }
+      return error.message || String(error);
+    }
+  </script>
+  <script async defer onerror="handleGoogleMapsScriptError()" src="https://maps.googleapis.com/maps/api/js?key=$encodedKey&v=weekly&callback=initRadarMap"></script>
+</body>
+</html>
+''';
+}
+
+class _MapDistrictFocusBanner extends StatelessWidget {
+  const _MapDistrictFocusBanner({required this.currentDistrictName});
+
+  final String currentDistrictName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topLeft,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xEFFFFFFF),
+          border: Border.all(color: const Color(0xFFD7DED7)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.explore_outlined, size: 16),
+              const SizedBox(width: 6),
+              Flexible(
+                child: LocalizedText(
+                  currentDistrictName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF17211E),
+                    fontWeight: FontWeight.w800,
+                    height: 1.15,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HongKongMapPainter extends CustomPainter {
+  const _HongKongMapPainter({
+    required this.location,
+    required this.contacts,
+    required this.nearbyContactIds,
+    required this.refreshSignature,
+    required this.selectedContactId,
+    required this.currentDistrictName,
+    required this.visibleDistricts,
+    required this.mapBounds,
+    required this.textScaler,
+  });
+
+  static const double _minLatitude = 22.13;
+  static const double _maxLatitude = 22.57;
+  static const double _minLongitude = 113.82;
+  static const double _maxLongitude = 114.43;
+
+  final DeviceLocation? location;
+  final List<RadarContact> contacts;
+  final Set<String> nearbyContactIds;
+  final String refreshSignature;
+  final String? selectedContactId;
+  final String? currentDistrictName;
+  final List<_DistrictShape> visibleDistricts;
+  final _MapBounds mapBounds;
+  final TextScaler textScaler;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final mapRect = _fitMapRect(rect.deflate(10), mapBounds);
+    _drawFocusedDistricts(canvas, mapRect);
+
+    final currentLocation = location;
+    final visibleContacts = contacts
+        .where((contact) => mapBounds.containsLocation(contact.location))
+        .toList();
+    if (visibleContacts.isNotEmpty) {
+      _drawContacts(canvas, mapRect, visibleContacts);
+    } else if (currentLocation != null &&
+        mapBounds.containsLocation(currentLocation)) {
+      _drawLocation(canvas, mapRect, currentLocation);
+    } else {
+      _drawEmptyHint(canvas, mapRect);
+    }
+
+    _drawSelectedContactLabel(canvas, mapRect);
+  }
+
+  void _drawFocusedDistricts(Canvas canvas, Rect rect) {
+    final focusedName = currentDistrictName;
+    if (focusedName == null) {
+      return;
+    }
+
+    for (final district in visibleDistricts) {
+      if (district.name != focusedName) {
+        continue;
+      }
+
+      final fillPaint = Paint()..color = const Color(0x55FFF1A6);
+      final outlinePaint = Paint()
+        ..color = const Color(0xFF0D7C66)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3;
+
+      _drawLand(canvas, rect, fillPaint, outlinePaint, district.points);
+    }
+  }
+
+  void _drawLand(
+    Canvas canvas,
+    Rect rect,
+    Paint fill,
+    Paint outline,
+    List<_MapPoint> points,
+  ) {
+    final path = Path();
+    for (var i = 0; i < points.length; i += 1) {
+      final point = _project(points[i], rect);
+      if (i == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    path.close();
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, outline);
+  }
+
+  void _drawEmptyHint(Canvas canvas, Rect rect) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: _localizedUiText('按「定位」在地圖顯示你的光點'),
+        style: TextStyle(
+          color: const Color(0xFF4B5F56),
+          fontWeight: FontWeight.w700,
+          fontSize: textScaler.scale(13),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    )..layout(maxWidth: rect.width - 24);
+    final offset = rect.center - Offset(painter.width / 2, painter.height / 2);
+    painter.paint(canvas, offset);
+  }
+
+  void _drawContacts(Canvas canvas, Rect rect, List<RadarContact> contacts) {
+    final sorted = contacts.toList()
+      ..sort((a, b) {
+        if (a.isSosActive != b.isSosActive) {
+          return a.isSosActive ? 1 : -1;
+        }
+        if (a.isMe == b.isMe) {
+          return a.name.compareTo(b.name);
+        }
+        return a.isMe ? 1 : -1;
+      });
+
+    for (final contact in sorted) {
+      _drawRadarContact(canvas, rect, contact);
+    }
+  }
+
+  void _drawLocation(Canvas canvas, Rect rect, DeviceLocation location) {
+    _drawMarker(
+      canvas,
+      rect,
+      location,
+      isMe: true,
+      isSelected: selectedContactId == null,
+      accuracyMeters: location.accuracyMeters,
+    );
+  }
+
+  void _drawRadarContact(Canvas canvas, Rect rect, RadarContact contact) {
+    final isNearby = nearbyContactIds.contains(contact.id);
+    final isSelected = selectedContactId == contact.id;
+    _drawMarker(
+      canvas,
+      rect,
+      contact.location,
+      isMe: contact.isMe,
+      isSosActive: contact.isSosActive,
+      isNearby: isNearby,
+      isSelected: isSelected,
+      accuracyMeters: contact.location.accuracyMeters,
+    );
+  }
+
+  void _drawMarker(
+    Canvas canvas,
+    Rect rect,
+    DeviceLocation location, {
+    required bool isMe,
+    bool isSosActive = false,
+    bool isNearby = false,
+    bool isSelected = false,
+    required double accuracyMeters,
+  }) {
+    final visiblePoint = _project(
+      mapBounds.clampPoint(_MapPoint(location.latitude, location.longitude)),
+      rect,
+    );
+    final accuracyRadius = max(10.0, min(44.0, accuracyMeters / 20));
+    final accuracyPaint = Paint()
+      ..color = isSosActive
+          ? const Color(0x55FF3B30)
+          : isMe
+          ? const Color(0x3341B6E6)
+          : isNearby
+          ? const Color(0x66FF3B30)
+          : const Color(0x33FF6B6B);
+    final ringPaint = Paint()
+      ..color = isSosActive
+          ? const Color(0xFFB00020)
+          : isMe
+          ? const Color(0xFF0D7C66)
+          : isNearby
+          ? const Color(0xFFFF3B30)
+          : const Color(0xFFC4512C)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = isSelected
+          ? 4
+          : isSosActive
+          ? 3.5
+          : isNearby
+          ? 3
+          : 2;
+    final dotPaint = Paint()
+      ..color = isSosActive
+          ? const Color(0xFFFFDAD6)
+          : isMe
+          ? const Color(0xFFFFC857)
+          : isNearby
+          ? const Color(0xFFFFF0A6)
+          : const Color(0xFFFFFFFF);
+
+    canvas.drawCircle(visiblePoint, accuracyRadius, accuracyPaint);
+    canvas.drawCircle(
+      visiblePoint,
+      isSelected
+          ? 14
+          : isSosActive
+          ? 13
+          : isNearby
+          ? 11
+          : 8,
+      ringPaint,
+    );
+    canvas.drawCircle(
+      visiblePoint,
+      isSelected
+          ? 7
+          : isSosActive
+          ? 6.5
+          : isNearby
+          ? 6
+          : 4.5,
+      dotPaint,
+    );
+    if (isSosActive) {
+      final labelPainter = TextPainter(
+        text: TextSpan(
+          text: 'SOS',
+          style: TextStyle(
+            color: const Color(0xFFB00020),
+            fontSize: textScaler.scale(9),
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final labelOffset = Offset(
+        visiblePoint.dx - labelPainter.width / 2,
+        visiblePoint.dy + 15,
+      );
+      final labelRect = Rect.fromLTWH(
+        labelOffset.dx - 4,
+        labelOffset.dy - 2,
+        labelPainter.width + 8,
+        labelPainter.height + 4,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(labelRect, const Radius.circular(5)),
+        Paint()..color = const Color(0xEEFFFFFF),
+      );
+      labelPainter.paint(canvas, labelOffset);
+    }
+  }
+
+  void _drawSelectedContactLabel(Canvas canvas, Rect rect) {
+    final selectedContact = _selectedContact();
+    if (selectedContact == null) {
+      return;
+    }
+    if (!mapBounds.containsLocation(selectedContact.location)) {
+      return;
+    }
+
+    final visiblePoint = _project(
+      mapBounds.clampPoint(
+        _MapPoint(
+          selectedContact.location.latitude,
+          selectedContact.location.longitude,
+        ),
+      ),
+      rect,
+    );
+    final districtName = _districtNameForLocation(selectedContact.location);
+    final name = selectedContact.isSosActive
+        ? '求救 · ${selectedContact.name}'
+        : selectedContact.name;
+    final label = districtName == null ? name : '$name · $districtName';
+
+    _drawLocationLabel(
+      canvas,
+      rect,
+      visiblePoint,
+      label,
+      isMe: selectedContact.isMe,
+      isSosActive: selectedContact.isSosActive,
+      isNearby: nearbyContactIds.contains(selectedContact.id),
+    );
+  }
+
+  RadarContact? _selectedContact() {
+    final selectedId = selectedContactId;
+    if (selectedId == null) {
+      return null;
+    }
+
+    for (final contact in contacts) {
+      if (contact.id == selectedId) {
+        return contact;
+      }
+    }
+    return null;
+  }
+
+  void _drawLocationLabel(
+    Canvas canvas,
+    Rect rect,
+    Offset point,
+    String label, {
+    required bool isMe,
+    bool isSosActive = false,
+    bool isNearby = false,
+  }) {
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: _localizedUiText(label),
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: textScaler.scale(13),
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final bubbleSize = Size(textPainter.width + 20, textPainter.height + 10);
+    final left = (point.dx - bubbleSize.width / 2).clamp(
+      rect.left + 4,
+      rect.right - bubbleSize.width - 4,
+    );
+    final top = max(rect.top + 4, point.dy - bubbleSize.height - 18);
+    final bubble = RRect.fromRectAndRadius(
+      Rect.fromLTWH(left, top, bubbleSize.width, bubbleSize.height),
+      const Radius.circular(8),
+    );
+    final bubblePaint = Paint()
+      ..color = isSosActive
+          ? const Color(0xFFB00020)
+          : isMe
+          ? const Color(0xFF17211E)
+          : isNearby
+          ? const Color(0xFFB00020)
+          : const Color(0xFF7A2E22);
+    final pointerPath = Path()
+      ..moveTo(point.dx, top + bubbleSize.height + 8)
+      ..lineTo(point.dx - 6, top + bubbleSize.height - 1)
+      ..lineTo(point.dx + 6, top + bubbleSize.height - 1)
+      ..close();
+
+    canvas.drawRRect(bubble, bubblePaint);
+    canvas.drawPath(pointerPath, bubblePaint);
+    textPainter.paint(
+      canvas,
+      Offset(
+        left + (bubbleSize.width - textPainter.width) / 2,
+        top + (bubbleSize.height - textPainter.height) / 2,
+      ),
+    );
+  }
+
+  Offset _project(_MapPoint point, Rect rect) {
+    return _projectMapPoint(point, rect, mapBounds);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HongKongMapPainter oldDelegate) {
+    return oldDelegate.refreshSignature != refreshSignature ||
+        oldDelegate.selectedContactId != selectedContactId ||
+        oldDelegate.currentDistrictName != currentDistrictName ||
+        oldDelegate.visibleDistricts != visibleDistricts ||
+        oldDelegate.mapBounds != mapBounds ||
+        oldDelegate.textScaler != textScaler;
+  }
+
+  static const List<_DistrictShape> _districts = [
+    _DistrictShape(
+      name: '屯門區',
+      color: Color(0xFFA9DCA4),
+      labelPoint: _MapPoint(22.39, 113.96),
+      points: [
+        _MapPoint(22.46, 113.86),
+        _MapPoint(22.43, 114.03),
+        _MapPoint(22.36, 114.02),
+        _MapPoint(22.34, 113.92),
+        _MapPoint(22.38, 113.84),
+      ],
+    ),
+    _DistrictShape(
+      name: '元朗區',
+      color: Color(0xFFAED2EC),
+      labelPoint: _MapPoint(22.45, 114.05),
+      points: [
+        _MapPoint(22.52, 113.98),
+        _MapPoint(22.52, 114.14),
+        _MapPoint(22.44, 114.15),
+        _MapPoint(22.39, 114.04),
+        _MapPoint(22.43, 114.00),
+      ],
+    ),
+    _DistrictShape(
+      name: '北區',
+      color: Color(0xFFF2B0BD),
+      labelPoint: _MapPoint(22.52, 114.18),
+      points: [
+        _MapPoint(22.57, 114.10),
+        _MapPoint(22.55, 114.29),
+        _MapPoint(22.48, 114.28),
+        _MapPoint(22.46, 114.14),
+        _MapPoint(22.52, 114.14),
+      ],
+    ),
+    _DistrictShape(
+      name: '大埔區',
+      color: Color(0xFFA9DDD2),
+      labelPoint: _MapPoint(22.45, 114.22),
+      points: [
+        _MapPoint(22.50, 114.18),
+        _MapPoint(22.48, 114.34),
+        _MapPoint(22.40, 114.32),
+        _MapPoint(22.38, 114.21),
+        _MapPoint(22.44, 114.15),
+      ],
+    ),
+    _DistrictShape(
+      name: '西貢區',
+      color: Color(0xFFC8ADA7),
+      labelPoint: _MapPoint(22.35, 114.31),
+      points: [
+        _MapPoint(22.43, 114.28),
+        _MapPoint(22.42, 114.42),
+        _MapPoint(22.28, 114.40),
+        _MapPoint(22.27, 114.27),
+        _MapPoint(22.34, 114.23),
+      ],
+    ),
+    _DistrictShape(
+      name: '沙田區',
+      color: Color(0xFFF4D1A0),
+      labelPoint: _MapPoint(22.38, 114.20),
+      points: [
+        _MapPoint(22.42, 114.15),
+        _MapPoint(22.41, 114.25),
+        _MapPoint(22.34, 114.24),
+        _MapPoint(22.33, 114.16),
+      ],
+    ),
+    _DistrictShape(
+      name: '荃灣區',
+      color: Color(0xFFBDE2A6),
+      labelPoint: _MapPoint(22.37, 114.09),
+      points: [
+        _MapPoint(22.41, 114.02),
+        _MapPoint(22.40, 114.15),
+        _MapPoint(22.34, 114.14),
+        _MapPoint(22.33, 114.04),
+      ],
+    ),
+    _DistrictShape(
+      name: '葵青區',
+      color: Color(0xFF8CD5B0),
+      labelPoint: _MapPoint(22.33, 114.12),
+      points: [
+        _MapPoint(22.35, 114.08),
+        _MapPoint(22.35, 114.16),
+        _MapPoint(22.30, 114.16),
+        _MapPoint(22.29, 114.10),
+      ],
+    ),
+    _DistrictShape(
+      name: '深水埗',
+      color: Color(0xFFE2A1B4),
+      labelPoint: _MapPoint(22.33, 114.16),
+      points: [
+        _MapPoint(22.35, 114.13),
+        _MapPoint(22.35, 114.18),
+        _MapPoint(22.31, 114.18),
+        _MapPoint(22.31, 114.14),
+      ],
+    ),
+    _DistrictShape(
+      name: '黃大仙',
+      color: Color(0xFFF0C3A7),
+      labelPoint: _MapPoint(22.34, 114.20),
+      points: [
+        _MapPoint(22.36, 114.18),
+        _MapPoint(22.36, 114.24),
+        _MapPoint(22.32, 114.23),
+        _MapPoint(22.33, 114.18),
+      ],
+    ),
+    _DistrictShape(
+      name: '九龍城',
+      color: Color(0xFFEFAE90),
+      labelPoint: _MapPoint(22.32, 114.19),
+      points: [
+        _MapPoint(22.33, 114.17),
+        _MapPoint(22.33, 114.22),
+        _MapPoint(22.30, 114.22),
+        _MapPoint(22.30, 114.17),
+      ],
+    ),
+    _DistrictShape(
+      name: '觀塘',
+      color: Color(0xFFE9A884),
+      labelPoint: _MapPoint(22.31, 114.24),
+      points: [
+        _MapPoint(22.33, 114.22),
+        _MapPoint(22.32, 114.27),
+        _MapPoint(22.29, 114.27),
+        _MapPoint(22.29, 114.22),
+      ],
+    ),
+    _DistrictShape(
+      name: '油尖旺',
+      color: Color(0xFFE6D39A),
+      labelPoint: _MapPoint(22.305, 114.165),
+      points: [
+        _MapPoint(22.32, 114.15),
+        _MapPoint(22.32, 114.18),
+        _MapPoint(22.29, 114.18),
+        _MapPoint(22.29, 114.15),
+      ],
+    ),
+    _DistrictShape(
+      name: '中西區',
+      color: Color(0xFFD7C4EE),
+      labelPoint: _MapPoint(22.285, 114.145),
+      points: [
+        _MapPoint(22.30, 114.11),
+        _MapPoint(22.30, 114.16),
+        _MapPoint(22.27, 114.16),
+        _MapPoint(22.265, 114.12),
+      ],
+    ),
+    _DistrictShape(
+      name: '灣仔區',
+      color: Color(0xFFEEC767),
+      labelPoint: _MapPoint(22.275, 114.175),
+      points: [
+        _MapPoint(22.29, 114.16),
+        _MapPoint(22.29, 114.19),
+        _MapPoint(22.265, 114.20),
+        _MapPoint(22.265, 114.16),
+      ],
+    ),
+    _DistrictShape(
+      name: '東區',
+      color: Color(0xFFF3A3A8),
+      labelPoint: _MapPoint(22.275, 114.225),
+      points: [
+        _MapPoint(22.29, 114.19),
+        _MapPoint(22.29, 114.28),
+        _MapPoint(22.24, 114.28),
+        _MapPoint(22.25, 114.20),
+      ],
+    ),
+    _DistrictShape(
+      name: '南區',
+      color: Color(0xFFBFB8E8),
+      labelPoint: _MapPoint(22.235, 114.19),
+      points: [
+        _MapPoint(22.26, 114.12),
+        _MapPoint(22.25, 114.28),
+        _MapPoint(22.19, 114.26),
+        _MapPoint(22.20, 114.10),
+      ],
+    ),
+    _DistrictShape(
+      name: '離島區',
+      color: Color(0xFFE7C86D),
+      labelPoint: _MapPoint(22.24, 113.94),
+      points: [
+        _MapPoint(22.33, 113.85),
+        _MapPoint(22.31, 114.05),
+        _MapPoint(22.23, 114.08),
+        _MapPoint(22.18, 113.95),
+        _MapPoint(22.22, 113.82),
+      ],
+    ),
+  ];
+}
+
+class _MapPoint {
+  const _MapPoint(this.latitude, this.longitude);
+
+  final double latitude;
+  final double longitude;
+}
+
+class _MapBounds {
+  const _MapBounds({
+    required this.minLatitude,
+    required this.maxLatitude,
+    required this.minLongitude,
+    required this.maxLongitude,
+  });
+
+  static const hongKong = _MapBounds(
+    minLatitude: _HongKongMapPainter._minLatitude,
+    maxLatitude: _HongKongMapPainter._maxLatitude,
+    minLongitude: _HongKongMapPainter._minLongitude,
+    maxLongitude: _HongKongMapPainter._maxLongitude,
+  );
+
+  final double minLatitude;
+  final double maxLatitude;
+  final double minLongitude;
+  final double maxLongitude;
+
+  double get latitudeSpan => max(0.0001, maxLatitude - minLatitude);
+  double get longitudeSpan => max(0.0001, maxLongitude - minLongitude);
+  double get centerLatitude => (minLatitude + maxLatitude) / 2;
+
+  double get physicalAspectRatio {
+    final longitudeScale = cos(_degreesToRadians(centerLatitude)).abs();
+    return max(0.2, longitudeSpan * longitudeScale / latitudeSpan);
+  }
+
+  _MapBounds padded(double fraction) {
+    final latitudePadding = latitudeSpan * fraction;
+    final longitudePadding = longitudeSpan * fraction;
+    return _MapBounds(
+      minLatitude: minLatitude - latitudePadding,
+      maxLatitude: maxLatitude + latitudePadding,
+      minLongitude: minLongitude - longitudePadding,
+      maxLongitude: maxLongitude + longitudePadding,
+    );
+  }
+
+  bool containsPoint(_MapPoint point) {
+    return point.latitude >= minLatitude &&
+        point.latitude <= maxLatitude &&
+        point.longitude >= minLongitude &&
+        point.longitude <= maxLongitude;
+  }
+
+  bool containsLocation(DeviceLocation location) {
+    return location.latitude >= minLatitude &&
+        location.latitude <= maxLatitude &&
+        location.longitude >= minLongitude &&
+        location.longitude <= maxLongitude;
+  }
+
+  _MapPoint clampPoint(_MapPoint point) {
+    return _MapPoint(
+      point.latitude.clamp(minLatitude, maxLatitude).toDouble(),
+      point.longitude.clamp(minLongitude, maxLongitude).toDouble(),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is _MapBounds &&
+        other.minLatitude == minLatitude &&
+        other.maxLatitude == maxLatitude &&
+        other.minLongitude == minLongitude &&
+        other.maxLongitude == maxLongitude;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(minLatitude, maxLatitude, minLongitude, maxLongitude);
+}
+
+class _DistrictShape {
+  const _DistrictShape({
+    required this.name,
+    required this.color,
+    required this.labelPoint,
+    required this.points,
+  });
+
+  final String name;
+  final Color color;
+  final _MapPoint labelPoint;
+  final List<_MapPoint> points;
+}
+
+String? _districtNameForLocation(DeviceLocation location) {
+  return _districtNameForPoint(
+    _MapPoint(location.latitude, location.longitude),
+  );
+}
+
+String? _districtNameForPoint(_MapPoint point) {
+  for (final district in _HongKongMapPainter._districts.reversed) {
+    if (_containsMapPoint(district.points, point)) {
+      return district.name;
+    }
+  }
+
+  return null;
+}
+
+_DistrictShape? _districtByName(String districtName) {
+  for (final district in _HongKongMapPainter._districts) {
+    if (district.name == districtName) {
+      return district;
+    }
+  }
+  return null;
+}
+
+List<_DistrictShape> _localizedDistrictsForDistrict(String? districtName) {
+  final anchorDistrict = districtName == null
+      ? null
+      : _districtByName(districtName);
+  if (anchorDistrict == null) {
+    return const <_DistrictShape>[];
+  }
+
+  final districts = _HongKongMapPainter._districts.toList()
+    ..sort((a, b) {
+      if (a.name == anchorDistrict.name) return -1;
+      if (b.name == anchorDistrict.name) return 1;
+      final distanceCompare = _mapPointDistance(
+        a.labelPoint,
+        anchorDistrict.labelPoint,
+      ).compareTo(_mapPointDistance(b.labelPoint, anchorDistrict.labelPoint));
+      return distanceCompare != 0
+          ? distanceCompare
+          : _districtOrder(a.name).compareTo(_districtOrder(b.name));
+    });
+
+  return List.unmodifiable(districts.take(3));
+}
+
+_MapBounds? _mapBoundsForDistricts(List<_DistrictShape> districts) {
+  if (districts.isEmpty) return null;
+  final points = districts.expand((district) => district.points).toList();
+  var minLatitude = points.first.latitude;
+  var maxLatitude = points.first.latitude;
+  var minLongitude = points.first.longitude;
+  var maxLongitude = points.first.longitude;
+  for (final point in points.skip(1)) {
+    minLatitude = min(minLatitude, point.latitude);
+    maxLatitude = max(maxLatitude, point.latitude);
+    minLongitude = min(minLongitude, point.longitude);
+    maxLongitude = max(maxLongitude, point.longitude);
+  }
+  return _MapBounds(
+    minLatitude: minLatitude,
+    maxLatitude: maxLatitude,
+    minLongitude: minLongitude,
+    maxLongitude: maxLongitude,
+  ).padded(0.28);
+}
+
+double _mapPointDistance(_MapPoint a, _MapPoint b) {
+  final dLat = a.latitude - b.latitude;
+  final dLng =
+      (a.longitude - b.longitude) *
+      cos(_degreesToRadians((a.latitude + b.latitude) / 2));
+  return sqrt(dLat * dLat + dLng * dLng);
+}
+
+String _districtMapAsset(String districtName) {
+  const assets = <String, String>{
+    '屯門區': 'tuen_mun',
+    '元朗區': 'yuen_long',
+    '北區': 'north',
+    '大埔區': 'tai_po',
+    '西貢區': 'sai_kung',
+    '沙田區': 'sha_tin',
+    '荃灣區': 'tsuen_wan',
+    '葵青區': 'kwai_tsing',
+    '深水埗': 'sham_shui_po',
+    '黃大仙': 'wong_tai_sin',
+    '九龍城': 'kowloon_city',
+    '觀塘': 'kwun_tong',
+    '油尖旺': 'yau_tsim_mong',
+    '中西區': 'central_western',
+    '灣仔區': 'wan_chai',
+    '東區': 'eastern',
+    '南區': 'southern',
+    '離島區': 'islands',
+  };
+  final slug = assets[districtName];
+  return slug == null
+      ? 'assets/images/hong_kong_18_districts.jpg'
+      : 'assets/images/districts/$slug.jpg';
+}
+
+Rect _fitMapRect(Rect rect, _MapBounds bounds) {
+  final targetAspect = bounds.physicalAspectRatio;
+  final rectAspect = rect.width / rect.height;
+  if (rectAspect > targetAspect) {
+    final width = rect.height * targetAspect;
+    return Rect.fromLTWH(
+      rect.left + (rect.width - width) / 2,
+      rect.top,
+      width,
+      rect.height,
+    );
+  }
+
+  final height = rect.width / targetAspect;
+  return Rect.fromLTWH(
+    rect.left,
+    rect.top + (rect.height - height) / 2,
+    rect.width,
+    height,
+  );
+}
+
+bool _containsMapPoint(List<_MapPoint> polygon, _MapPoint point) {
+  var inside = false;
+
+  for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    final current = polygon[i];
+    final previous = polygon[j];
+    final crossesLatitude =
+        (current.latitude > point.latitude) !=
+        (previous.latitude > point.latitude);
+
+    if (!crossesLatitude) {
+      continue;
+    }
+
+    final intersectionLongitude =
+        (previous.longitude - current.longitude) *
+            (point.latitude - current.latitude) /
+            (previous.latitude - current.latitude) +
+        current.longitude;
+
+    if (point.longitude < intersectionLongitude) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+Offset _projectLocationToMap(
+  DeviceLocation location,
+  Rect rect, [
+  _MapBounds bounds = _MapBounds.hongKong,
+]) {
+  return _projectMapPoint(
+    bounds.clampPoint(_MapPoint(location.latitude, location.longitude)),
+    rect,
+    bounds,
+  );
+}
+
+Offset _projectMapPoint(
+  _MapPoint point,
+  Rect rect, [
+  _MapBounds bounds = _MapBounds.hongKong,
+]) {
+  final clampedPoint = bounds.clampPoint(point);
+  final x =
+      (clampedPoint.longitude - bounds.minLongitude) / bounds.longitudeSpan;
+  final y =
+      1 - (clampedPoint.latitude - bounds.minLatitude) / bounds.latitudeSpan;
+  return Offset(rect.left + rect.width * x, rect.top + rect.height * y);
+}
+
+_MapPoint _unprojectMapPoint(
+  Offset point,
+  Rect rect, [
+  _MapBounds bounds = _MapBounds.hongKong,
+]) {
+  final longitude =
+      bounds.minLongitude +
+      ((point.dx - rect.left) / rect.width) * bounds.longitudeSpan;
+  final latitude =
+      bounds.maxLatitude -
+      ((point.dy - rect.top) / rect.height) * bounds.latitudeSpan;
+
+  return _MapPoint(latitude, longitude);
+}
+
+int _districtOrder(String districtName) {
+  final index = _HongKongMapPainter._districts.indexWhere(
+    (district) => district.name == districtName,
+  );
+  return index == -1 ? _HongKongMapPainter._districts.length : index;
+}
+
+class CommunityNetworkPage extends StatelessWidget {
+  const CommunityNetworkPage({super.key, this.enableNews = true});
+
+  final bool enableNews;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const LocalizedText('社區資訊'),
+        actions: [
+          IconButton(
+            tooltip: _localizedUiText('開啟 AIECO.HK'),
+            onPressed: () => unawaited(_openExternalUrl(context, _aiecoWebUrl)),
+            icon: const Icon(Icons.open_in_new),
+          ),
+        ],
+      ),
+      body: SafeArea(child: _CommunityInfoTabPage(enableNews: enableNews)),
+    );
+  }
+}
+
+class _SosLightButton extends StatelessWidget {
+  const _SosLightButton({required this.controller});
+
+  final _SosLightController controller;
+
+  Future<void> _handlePressed(BuildContext context) async {
+    String? message;
+    if (controller.active) {
+      message = await controller.stop();
+    } else {
+      final confirmed = await _confirmStart(context);
+      if (confirmed) {
+        message = await controller.start();
+      }
+    }
+    if (!context.mounted || message == null) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: LocalizedText(message)));
+  }
+
+  Future<bool> _confirmStart(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const LocalizedText('啟動 SOS 燈？'),
+          content: const LocalizedText('手機閃光燈會持續閃出 SOS 燈號，直到你再按一次停止。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const LocalizedText('取消'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.flash_on),
+              label: const LocalizedText('確認啟動'),
+            ),
+          ],
+        );
+      },
+    );
+    return confirmed == true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final active = controller.active;
+        final foregroundColor = active ? Colors.white : const Color(0xFFC4512C);
+        final backgroundColor = active
+            ? const Color(0xFFC4512C)
+            : const Color(0xFFFFEEE3);
+
+        return LocalizedTooltip(
+          message: active ? '停止 SOS 燈' : '啟動 SOS 燈',
+          child: FilledButton.icon(
+            onPressed: controller.busy ? null : () => _handlePressed(context),
+            icon: controller.busy
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.flash_on, size: 16),
+            label: const LocalizedText(
+              'SOS 燈',
+              maxLines: 1,
+              overflow: TextOverflow.clip,
+            ),
+            style: FilledButton.styleFrom(
+              backgroundColor: backgroundColor,
+              foregroundColor: foregroundColor,
+              disabledBackgroundColor: backgroundColor.withValues(alpha: 0.62),
+              disabledForegroundColor: foregroundColor.withValues(alpha: 0.62),
+              minimumSize: const Size(78, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              textStyle: Theme.of(
+                context,
+              ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SosLightController extends ChangeNotifier {
+  static const MethodChannel _channel = MethodChannel(
+    'hk.aieco.propagation_light/wifi_mesh',
+  );
+  static const _sosPattern = <_SosPulse>[
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 660)),
+    _SosPulse(true, Duration(milliseconds: 660)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 660)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 660)),
+    _SosPulse(false, Duration(milliseconds: 660)),
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 220)),
+    _SosPulse(true, Duration(milliseconds: 220)),
+    _SosPulse(false, Duration(milliseconds: 1540)),
+  ];
+
+  bool _active = false;
+  bool _busy = false;
+  bool _disposed = false;
+  int _runId = 0;
+  String? _errorMessage;
+
+  bool get active => _active;
+  bool get busy => _busy;
+
+  Future<String?> toggle() {
+    return _active ? stop() : start();
+  }
+
+  Future<String?> start() async {
+    if (_busy || _active) {
+      return null;
+    }
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      _errorMessage = 'SOS 燈需要支援閃光燈的手機。';
+      _notify();
+      return _errorMessage;
+    }
+
+    final runId = ++_runId;
+    _active = true;
+    _busy = true;
+    _errorMessage = null;
+    _notify();
+
+    final ready = await _setTorch(true);
+    if (!_isCurrent(runId)) {
+      await _setTorch(false, updateError: false);
+      return null;
+    }
+
+    _busy = false;
+    if (!ready) {
+      _active = false;
+      _runId += 1;
+      _notify();
+      return _errorMessage;
+    }
+
+    _notify();
+    unawaited(
+      _runPattern(
+        runId,
+        startIndex: 1,
+        initialDelay: _sosPattern.first.duration,
+      ),
+    );
+    return null;
+  }
+
+  Future<String?> stop() async {
+    if (!_active && !_busy) {
+      return null;
+    }
+
+    _active = false;
+    _busy = true;
+    _runId += 1;
+    _notify();
+    await _setTorch(false, updateError: false);
+    _busy = false;
+    _notify();
+    return null;
+  }
+
+  Future<void> _runPattern(
+    int runId, {
+    required int startIndex,
+    required Duration initialDelay,
+  }) async {
+    await Future<void>.delayed(initialDelay);
+
+    var index = startIndex;
+    while (_isCurrent(runId)) {
+      final pulse = _sosPattern[index];
+      final ok = await _setTorch(pulse.enabled);
+      if (!_isCurrent(runId)) {
+        return;
+      }
+      if (!ok && pulse.enabled) {
+        _active = false;
+        _runId += 1;
+        await _setTorch(false, updateError: false);
+        _notify();
+        return;
+      }
+      await Future<void>.delayed(pulse.duration);
+      index = (index + 1) % _sosPattern.length;
+    }
+  }
+
+  Future<bool> _setTorch(bool enabled, {bool updateError = true}) async {
+    try {
+      await _channel.invokeMethod<Object?>('setTorch', <String, Object?>{
+        'enabled': enabled,
+      });
+      return true;
+    } on PlatformException catch (error) {
+      if (updateError) {
+        _errorMessage = error.message ?? 'SOS 燈操作失敗：${error.code}';
+      }
+    } on MissingPluginException {
+      if (updateError) {
+        _errorMessage = '目前平台未提供 SOS 燈原生控制。';
+      }
+    }
+    return false;
+  }
+
+  bool _isCurrent(int runId) {
+    return !_disposed && _active && _runId == runId;
+  }
+
+  void _notify() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    final shouldStopTorch = _active || _busy;
+    _disposed = true;
+    _active = false;
+    _runId += 1;
+    if (shouldStopTorch) {
+      unawaited(_setTorch(false, updateError: false));
+    }
+    super.dispose();
+  }
+}
+
+class _SosPulse {
+  const _SosPulse(this.enabled, this.duration);
+
+  final bool enabled;
+  final Duration duration;
+}
+
+class _StatusAndPeersPanel extends StatelessWidget {
+  const _StatusAndPeersPanel({
+    required this.mesh,
+    required this.onEditUserName,
+  });
+
+  final MeshChatService mesh;
+  final VoidCallback onEditUserName;
+
+  @override
+  Widget build(BuildContext context) {
+    final peers = mesh.peers;
+    final isOnlineMode = mesh.networkMode == MeshNetworkMode.online;
+    final modeTitle = isOnlineMode ? '線上光網' : '離線 mesh';
+    final peerSummary = isOnlineMode
+        ? '${peers.length} 個線上光點'
+        : '${peers.length} 個附近節點';
+
+    return Card(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 400),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: mesh.isRunning
+                          ? const Color(0xFFE0F2E9)
+                          : const Color(0xFFFFEEE3),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      mesh.isRunning
+                          ? (isOnlineMode ? Icons.public : Icons.hub)
+                          : Icons.portable_wifi_off,
+                      color: mesh.isRunning
+                          ? const Color(0xFF0D7C66)
+                          : const Color(0xFFC4512C),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        LocalizedText(
+                          mesh.isRunning ? '$modeTitle 已啟動' : '$modeTitle 未啟動',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        LocalizedText(
+                          peerSummary,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<MeshNetworkMode>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment<MeshNetworkMode>(
+                    value: MeshNetworkMode.online,
+                    icon: Icon(Icons.public, size: 16),
+                    label: LocalizedText('線上'),
+                  ),
+                  ButtonSegment<MeshNetworkMode>(
+                    value: MeshNetworkMode.offline,
+                    icon: Icon(Icons.hub_outlined, size: 16),
+                    label: LocalizedText('離線'),
+                  ),
+                ],
+                selected: {mesh.networkMode},
+                onSelectionChanged: (selection) {
+                  unawaited(mesh.setNetworkMode(selection.single));
+                },
+              ),
+              const SizedBox(height: 10),
+              _NetworkModeNotice(mesh: mesh),
+              const SizedBox(height: 12),
+              LocalizedTooltip(
+                message: '更改用戶名稱',
+                child: InkWell(
+                  key: const ValueKey('network-user-name-card'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: onEditUserName,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFAFBF7),
+                      border: Border.all(color: const Color(0xFFD7DED7)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.badge_outlined,
+                            color: Color(0xFF0D7C66),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                LocalizedText(
+                                  '你的用戶名稱',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: const Color(0xFF66756D),
+                                      ),
+                                ),
+                                LocalizedText(
+                                  mesh.userName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w900,
+                                        letterSpacing: 0,
+                                      ),
+                                ),
+                                LocalizedText(
+                                  '光點名稱：${mesh.displayName}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: const Color(0xFF4B5F56),
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          const Icon(Icons.edit_outlined, size: 20),
+                          const SizedBox(width: 8),
+                          const LocalizedTooltip(
+                            message: '光點名稱固定，不能更改',
+                            child: Icon(Icons.lock_outline, size: 20),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              LocalizedText(
+                mesh.status,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF4B5F56)),
+              ),
+              const SizedBox(height: 12),
+              if (peers.isEmpty)
+                _EmptyPeers(
+                  networkMode: mesh.networkMode,
+                  onlineConfigured: mesh.onlineConfigured,
+                )
+              else
+                ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: peers.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    return _PeerTile(peer: peers[index]);
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NetworkBridgePanel extends StatefulWidget {
+  const _NetworkBridgePanel({required this.mesh});
+
+  final MeshChatService mesh;
+
+  @override
+  State<_NetworkBridgePanel> createState() => _NetworkBridgePanelState();
+}
+
+class _NetworkBridgePanelState extends State<_NetworkBridgePanel> {
+  final _code = TextEditingController();
+  String? _error;
+  bool _busy = false;
+
+  Future<void> _pasteCode() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (!mounted || data?.text == null) return;
+    setState(() {
+      final value = data!.text!.trim();
+      if (NetworkPairingClient.codePattern.hasMatch(value)) {
+        _code.text = value;
+        _error = null;
+      } else {
+        _error = '請輸入 6 位數字連接碼。';
+      }
+    });
+  }
+
+  Future<void> _join() async {
+    if (!NetworkPairingClient.codePattern.hasMatch(_code.text.trim())) {
+      setState(() => _error = '請輸入 6 位數字連接碼。');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.mesh.connectOtherNetwork(_code.text);
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on Object {
+      if (mounted) setState(() => _error = '暫時未能連接，請稍後再試。');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _code.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mesh = widget.mesh;
+    final bridge = mesh.networkBridge;
+    final enabled =
+        mesh.networkMode == MeshNetworkMode.online && mesh.onlineConfigured;
+    final pairingReady = enabled;
+    final accent = bridge.connected
+        ? const Color(0xFF0D7C66)
+        : bridge.active
+        ? const Color(0xFF946000)
+        : const Color(0xFF566B60);
+    final status = bridge.connected
+        ? '已互通'
+        : bridge.active
+        ? '連接中…'
+        : '尚未連接';
+    final textTheme = Theme.of(context).textTheme;
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(16),
+      side: const BorderSide(color: Color(0xFFDCE6E0)),
+    );
+    return Card(
+      key: const ValueKey('network-bridge-panel'),
+      elevation: 0,
+      color: Colors.white,
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        key: const ValueKey('network-bridge-toggle'),
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        leading: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE9F4EF),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(
+            Icons.hub_outlined,
+            color: Color(0xFF0D7C66),
+            size: 22,
+          ),
+        ),
+        title: LocalizedText(
+          '連接另一個 光網APP',
+          style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 5),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LocalizedText(
+                '有網絡時才可對接',
+                style: textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF66756D),
+                ),
+              ),
+              const SizedBox(height: 5),
+              Row(
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: accent,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: LocalizedText(
+                      status,
+                      style: textTheme.bodySmall?.copyWith(color: accent),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        children: [
+          const Divider(height: 1, color: Color(0xFFE5ECE7)),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F8F5),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: _BridgeEndpoint(
+                        icon: Icons.phone_android,
+                        label: '本網絡',
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Icon(
+                        bridge.connected ? Icons.sync_alt : Icons.link,
+                        color: accent,
+                        size: 24,
+                      ),
+                    ),
+                    const Expanded(
+                      child: _BridgeEndpoint(
+                        icon: Icons.public,
+                        label: '另一個 APP',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                LocalizedText(
+                  bridge.connected ? '兩個 APP 的聊天室已互通' : '一人接入，兩邊聊天室互通',
+                  textAlign: TextAlign.center,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF4B5F56),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          LocalizedText(
+            '分享本網絡',
+            style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          LocalizedText(
+            '把連接碼交給另一個 APP 的用戶。',
+            style: textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF66756D),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SelectableText(
+            mesh.networkConnectionCode,
+            key: const ValueKey('local-network-code'),
+            textAlign: TextAlign.center,
+            style: textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+              letterSpacing: 6,
+              color: const Color(0xFF0D7C66),
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const ValueKey('copy-network-code'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 46),
+              side: const BorderSide(color: Color(0xFFBDD5C8)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: () async {
+              await Clipboard.setData(
+                ClipboardData(text: mesh.networkConnectionCode),
+              );
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: LocalizedText('已複製本網絡連接碼')),
+              );
+            },
+            icon: const Icon(Icons.copy_outlined, size: 18),
+            label: const LocalizedText('複製本網絡連接碼'),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 18),
+            child: Divider(height: 1, color: Color(0xFFE5ECE7)),
+          ),
+          LocalizedText(
+            '接入其他網絡',
+            style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          LocalizedText(
+            '貼上對方的連接碼，即可連通聊天室。',
+            style: textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF66756D),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('other-network-code'),
+            controller: _code,
+            enabled: pairingReady && !_busy,
+            autocorrect: false,
+            enableSuggestions: false,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(6),
+            ],
+            maxLength: 6,
+            style: textTheme.bodySmall,
+            decoration: InputDecoration(
+              hintText: _localizedUiText('輸入對方的 6 位數字碼'),
+              errorText: _error == null ? null : _localizedUiText(_error!),
+              errorMaxLines: 3,
+              filled: true,
+              fillColor: const Color(0xFFF7F9F8),
+              contentPadding: const EdgeInsets.all(14),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFFDCE6E0)),
+              ),
+              suffixIcon: IconButton(
+                key: const ValueKey('paste-network-code'),
+                onPressed: pairingReady && !_busy ? _pasteCode : null,
+                tooltip: _localizedUiText('貼上連接碼'),
+                icon: const Icon(Icons.content_paste_outlined, size: 20),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            key: const ValueKey('join-other-network'),
+            onPressed: _busy || !pairingReady ? null : _join,
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF0D7C66),
+              minimumSize: const Size(double.infinity, 48),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            icon: _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.link, size: 20),
+            label: LocalizedText(_busy ? '連接中…' : '接通另一個 APP'),
+          ),
+          if (bridge.active || _busy) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              key: const ValueKey('disconnect-other-network'),
+              onPressed: mesh.disconnectOtherNetwork,
+              icon: const Icon(Icons.link_off, size: 18),
+              label: const LocalizedText('中斷互通'),
+            ),
+          ],
+          if (bridge.error != null) ...[
+            const SizedBox(height: 10),
+            LocalizedText(
+              bridge.error!,
+              style: textTheme.bodySmall?.copyWith(
+                color: const Color(0xFF946000),
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.info_outline,
+                size: 16,
+                color: Color(0xFF66756D),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: LocalizedText(
+                  !enabled
+                      ? '請先切換線上模式並連接光網，再使用跨 APP 互通。'
+                      : '請保持這部手機的 APP 運行及連網；關閉或停止背景執行後，兩邊互通會暫停。',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF66756D),
+                    height: 1.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BridgeEndpoint extends StatelessWidget {
+  const _BridgeEndpoint({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Icon(icon, size: 24, color: const Color(0xFF0D7C66)),
+        const SizedBox(height: 6),
+        LocalizedText(
+          label,
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+}
+
+class _NetworkModeNotice extends StatelessWidget {
+  const _NetworkModeNotice({required this.mesh});
+
+  final MeshChatService mesh;
+
+  @override
+  Widget build(BuildContext context) {
+    final isOnlineMode = mesh.networkMode == MeshNetworkMode.online;
+    final icon = isOnlineMode ? Icons.cloud_done_outlined : Icons.router;
+    final color = isOnlineMode && !mesh.onlineConfigured
+        ? const Color(0xFFC4512C)
+        : const Color(0xFF0D7C66);
+    final text = isOnlineMode
+        ? mesh.onlineConfigured
+              ? '線上模式：入 APP 會連接 relay 聊天，不需要接同一 WiFi。'
+              : '線上模式未設定 relay。請用 --dart-define=AIECO_ONLINE_RELAY_URL=wss://... 建置。'
+        : '離線模式：請先開啟 WiFi，並連接同一個 WiFi、手機熱點或 mesh LAN，系統會在局域網內自動尋找光點。如仍未能接上離線網絡，請先重啟 APP；若仍未恢復，再關閉並重新開啟光之網絡。';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFBF7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0E5DE)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: LocalizedText(
+              text,
+              softWrap: true,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: const Color(0xFF4B5F56)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyPeers extends StatelessWidget {
+  const _EmptyPeers({
+    required this.networkMode,
+    required this.onlineConfigured,
+  });
+
+  final MeshNetworkMode networkMode;
+  final bool onlineConfigured;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = switch (networkMode) {
+      MeshNetworkMode.online =>
+        onlineConfigured ? '等待已進入 APP 的線上光點自動出現。' : '線上 relay 未設定，暫時不能連接線上光點。',
+      MeshNetworkMode.offline => '等待同一 WiFi / mesh LAN 內已開啟本 app 的用戶自動配對。',
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFBF7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0E5DE)),
+      ),
+      child: LocalizedText(message),
+    );
+  }
+}
+
+class _PeerTile extends StatelessWidget {
+  const _PeerTile({required this.peer});
+
+  final MeshPeer peer;
+
+  @override
+  Widget build(BuildContext context) {
+    final seconds = DateTime.now().difference(peer.lastSeen).inSeconds;
+    final age = seconds < 2 ? '剛剛' : '$seconds 秒前';
+    final source = peer.isOnline ? '線上同步' : '自動配對';
+
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0E5DE)),
+      ),
+      child: Row(
+        children: [
+          const CircleAvatar(
+            radius: 18,
+            backgroundColor: Color(0xFFDFF3EF),
+            child: Icon(
+              Icons.lightbulb_outline,
+              size: 18,
+              color: Color(0xFF0D7C66),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LocalizedText(
+                  peer.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                LocalizedText(
+                  '$source · $age',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WifiMeshPanel extends StatefulWidget {
+  const _WifiMeshPanel({
+    required this.controller,
+    required this.onNetworkReady,
+    required this.onPeerReady,
+    required this.scrollInternally,
+  });
+
+  final WifiMeshController controller;
+  final Future<void> Function() onNetworkReady;
+  final Future<void> Function(WifiP2pPeer peer) onPeerReady;
+  final bool scrollInternally;
+
+  @override
+  State<_WifiMeshPanel> createState() => _WifiMeshPanelState();
+}
+
+class _WifiMeshPanelState extends State<_WifiMeshPanel> {
+  WifiNetworkInfo? _selectedWifi;
+
+  WifiNetworkInfo? _currentSelectedWifi() {
+    final selected = _selectedWifi;
+    if (selected == null) {
+      return null;
+    }
+
+    for (final network in widget.controller.wifiNetworks) {
+      if (network.ssid == selected.ssid) {
+        return network;
+      }
+    }
+
+    return null;
+  }
+
+  void _selectWifi(WifiNetworkInfo network) {
+    setState(() {
+      _selectedWifi = network;
+    });
+  }
+
+  Future<void> _connectWifi(WifiNetworkInfo network) async {
+    _selectWifi(network);
+    await widget.controller.connectWifi(network);
+    await widget.onNetworkReady();
+  }
+
+  Future<void> _connectPeer(WifiP2pPeer peer) async {
+    await widget.controller.connectPeer(peer);
+    await widget.onPeerReady(peer);
+  }
+
+  Future<void> _setTransportMode(WifiTransportMode mode) async {
+    await widget.controller.setTransportMode(mode);
+    await widget.onNetworkReady();
+  }
+
+  Future<void> _refreshBluetoothMode() async {
+    if (widget.controller.isIOS) {
+      await widget.controller.discoverAppPeers();
+    } else {
+      await widget.controller.refreshStatus();
+    }
+    await widget.onNetworkReady();
+  }
+
+  Future<void> _scanPeersAndConnectMesh() async {
+    await widget.controller.discoverAppPeers();
+    final meshPeer = widget.controller.firstAppP2pPeer;
+    if (meshPeer == null) {
+      widget.controller.setLocalMessage(
+        widget.controller.scansLanPeers
+            ? '未找到同一 WiFi 內已開啟本 app 的 LAN peer。請兩部手機都按「權限」，並允許本地網絡。'
+            : '未找到已開啟本 app 的 Wi‑Fi Direct peer。請兩部手機都按「權限」，並保持 WiFi 開啟。',
+      );
+      return;
+    }
+
+    await _connectPeer(meshPeer);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final controller = widget.controller;
+    final group = controller.group;
+    final hotspot = controller.hotspot;
+    final selectedWifi = _currentSelectedWifi();
+    final meshPeer = controller.firstAppP2pPeer;
+    final isBluetoothMode =
+        controller.transportMode == WifiTransportMode.bluetooth;
+    final wirelessContent = <Widget>[
+      _WifiNotice(controller: controller),
+      if (isBluetoothMode) ...[
+        const SizedBox(height: 12),
+        _BluetoothHotspotNotice(controller: controller),
+        if (controller.p2pPeers.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          LocalizedText(
+            '藍芽 peers',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...controller.p2pPeers.map(
+            (peer) => _P2pPeerTile(
+              peer: peer,
+              onConnect: () => unawaited(_connectPeer(peer)),
+            ),
+          ),
+        ],
+        if (controller.p2pPeers.isEmpty) ...[
+          const SizedBox(height: 12),
+          _EmptyWireless(controller: controller),
+        ],
+      ] else ...[
+        if (group != null) ...[
+          const SizedBox(height: 12),
+          _CredentialBox(
+            title: 'Wi‑Fi Direct Group',
+            ssid: group.networkName,
+            passphrase: group.passphrase,
+            detail:
+                '${group.isGroupOwner ? '本機是 group owner' : '本機是 client'} · ${group.clients.length} client',
+          ),
+        ],
+        if (hotspot != null) ...[
+          const SizedBox(height: 12),
+          _CredentialBox(
+            title: 'AIECO 本地熱點',
+            ssidLabel: '實際 SSID',
+            passphraseLabel: '實際密碼',
+            ssid: hotspot.ssid,
+            passphrase: hotspot.preSharedKey,
+            detail: '系統會分配實際 WiFi 名稱和密碼，不能固定為 aiecohk。其他手機請連接上方資料，再打開傳播光聊天。',
+          ),
+        ],
+        const SizedBox(height: 12),
+        _MeshAutoConnectNotice(controller: controller, meshPeer: meshPeer),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: controller.busy
+                    ? null
+                    : () => unawaited(_scanPeersAndConnectMesh()),
+                icon: const Icon(Icons.radar),
+                label: LocalizedText(
+                  controller.scansLanPeers ? '掃 LAN 並連接' : '掃 P2P 並連接',
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (controller.p2pPeers.isNotEmpty) ...[
+          LocalizedText(
+            controller.isIOS
+                ? 'WiFi LAN peers'
+                : 'WiFi LAN / Wi‑Fi Direct peers',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...controller.p2pPeers.map(
+            (peer) => _P2pPeerTile(
+              peer: peer,
+              onConnect: () => unawaited(_connectPeer(peer)),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (controller.wifiNetworks.isNotEmpty) ...[
+          LocalizedText(
+            '附近 WiFi',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...controller.wifiNetworks.map(
+            (network) => _WifiNetworkTile(
+              network: network,
+              selected: selectedWifi?.ssid == network.ssid,
+              onSelect: () => _selectWifi(network),
+              onConnect: () => unawaited(_connectWifi(network)),
+            ),
+          ),
+        ],
+        if (controller.p2pPeers.isEmpty && controller.wifiNetworks.isEmpty)
+          _EmptyWireless(controller: controller),
+      ],
+      const SizedBox(height: 28),
+    ];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: isBluetoothMode
+                        ? const Color(0xFFF1EDFF)
+                        : controller.isAndroid
+                        ? const Color(0xFFE7F0FF)
+                        : const Color(0xFFF3F1EC),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    isBluetoothMode
+                        ? Icons.bluetooth_connected
+                        : controller.isAndroid
+                        ? Icons.wifi_tethering
+                        : Icons.wifi,
+                    color: isBluetoothMode
+                        ? const Color(0xFF5A46A0)
+                        : controller.isAndroid
+                        ? const Color(0xFF285BAA)
+                        : const Color(0xFF756D61),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      LocalizedText(
+                        isBluetoothMode
+                            ? '藍芽模式'
+                            : controller.scansLanPeers
+                            ? 'WiFi LAN peers'
+                            : 'WiFi P2P / 熱點',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      LocalizedText(
+                        controller.summary,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                if (controller.busy)
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  IconButton(
+                    tooltip: _localizedUiText('刷新狀態'),
+                    onPressed: () => unawaited(controller.refreshStatus()),
+                    icon: const Icon(Icons.refresh),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _WirelessModePicker(
+              controller: controller,
+              onChanged: (mode) => unawaited(_setTransportMode(mode)),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: controller.busy
+                      ? null
+                      : () => unawaited(controller.requestPermissions()),
+                  icon: const Icon(Icons.verified_user_outlined),
+                  label: const LocalizedText('權限'),
+                ),
+                if (isBluetoothMode) ...[
+                  FilledButton.icon(
+                    onPressed: controller.busy
+                        ? null
+                        : () => unawaited(_refreshBluetoothMode()),
+                    icon: const Icon(Icons.bluetooth_searching),
+                    label: const LocalizedText('藍芽刷新'),
+                  ),
+                  if (!controller.isIOS)
+                    OutlinedButton.icon(
+                      onPressed: controller.busy
+                          ? null
+                          : () => unawaited(
+                              controller.openBluetoothTetherSettings(),
+                            ),
+                      icon: const Icon(Icons.bluetooth_connected),
+                      label: const LocalizedText('藍芽熱點'),
+                    ),
+                  IconButton.outlined(
+                    tooltip: _localizedUiText('藍芽設定'),
+                    onPressed: controller.busy
+                        ? null
+                        : () => unawaited(controller.openBluetoothSettings()),
+                    icon: const Icon(Icons.bluetooth),
+                  ),
+                ] else ...[
+                  FilledButton.icon(
+                    onPressed: controller.busy
+                        ? null
+                        : () => unawaited(controller.discoverAppPeers()),
+                    icon: const Icon(Icons.radar),
+                    label: LocalizedText(
+                      controller.scansLanPeers ? '掃 LAN' : '掃 P2P',
+                    ),
+                  ),
+                  if (!controller.isIOS) ...[
+                    OutlinedButton.icon(
+                      onPressed: controller.busy
+                          ? null
+                          : () => unawaited(controller.createGroup()),
+                      icon: const Icon(Icons.hub_outlined),
+                      label: const LocalizedText('開光網'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: controller.busy
+                          ? null
+                          : () => unawaited(controller.toggleHotspot()),
+                      icon: Icon(
+                        hotspot == null
+                            ? Icons.wifi_tethering
+                            : Icons.stop_circle,
+                      ),
+                      label: LocalizedText(hotspot == null ? '開熱點' : '關熱點'),
+                    ),
+                  ],
+                  IconButton.outlined(
+                    tooltip: _localizedUiText('WiFi 設定'),
+                    onPressed: controller.busy
+                        ? null
+                        : () => unawaited(controller.openWifiSettings()),
+                    icon: const Icon(Icons.settings),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (widget.scrollInternally)
+              Expanded(child: ListView(children: wirelessContent))
+            else
+              ...wirelessContent,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WifiNotice extends StatelessWidget {
+  const _WifiNotice({required this.controller});
+
+  final WifiMeshController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFBF7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0E5DE)),
+      ),
+      child: LocalizedText(
+        controller.lastMessage,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
+  }
+}
+
+class _WirelessModePicker extends StatelessWidget {
+  const _WirelessModePicker({
+    required this.controller,
+    required this.onChanged,
+  });
+
+  final WifiMeshController controller;
+  final ValueChanged<WifiTransportMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<WifiTransportMode>(
+        showSelectedIcon: false,
+        segments: const [
+          ButtonSegment<WifiTransportMode>(
+            value: WifiTransportMode.bluetooth,
+            icon: Icon(Icons.bluetooth),
+            label: LocalizedText('藍芽'),
+          ),
+          ButtonSegment<WifiTransportMode>(
+            value: WifiTransportMode.wifi,
+            icon: Icon(Icons.wifi),
+            label: LocalizedText('WiFi'),
+          ),
+        ],
+        selected: {controller.transportMode},
+        onSelectionChanged: controller.busy
+            ? null
+            : (selection) => onChanged(selection.single),
+      ),
+    );
+  }
+}
+
+class _MeshAutoConnectNotice extends StatelessWidget {
+  const _MeshAutoConnectNotice({
+    required this.controller,
+    required this.meshPeer,
+  });
+
+  final WifiMeshController controller;
+  final WifiP2pPeer? meshPeer;
+
+  @override
+  Widget build(BuildContext context) {
+    final peer = meshPeer;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF4FF),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFC9DDF7)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.hub_outlined, color: Color(0xFF285BAA)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LocalizedText(
+                  peer == null
+                      ? controller.scansLanPeers
+                            ? 'MESH 自動連接會掃同一 WiFi 內的 app peers，不用輸入 IP。掃到後會用 TCP mesh 同步。'
+                            : 'MESH 自動連接會掃 Wi‑Fi Direct app peers，不用輸入密碼。掃到後會發出 P2P 連接邀請。'
+                      : '已找到 app peer：${peer.name}，可直接連接。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 6),
+                LocalizedText(
+                  'iPhone 與 Android 對接只可使用藍芽 MESH。',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BluetoothHotspotNotice extends StatelessWidget {
+  const _BluetoothHotspotNotice({required this.controller});
+
+  final WifiMeshController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _statusText();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1EDFF),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFD8CDF6)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            controller.boundToBluetooth
+                ? Icons.bluetooth_connected
+                : Icons.bluetooth,
+            color: const Color(0xFF5A46A0),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: LocalizedText(
+              text,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _statusText() {
+    if (controller.isIOS) {
+      if (controller.boundToBluetooth) {
+        return 'iOS 藍芽模式已啟用 peer-to-peer 搜尋。';
+      }
+      return 'iOS 藍芽模式會使用系統 peer-to-peer 搜尋，不經 WiFi 掃描。';
+    }
+    if (!controller.bluetoothSupported) {
+      return '此裝置未報告藍芽支援。';
+    }
+    if (controller.boundToBluetooth) {
+      return '已偵測藍芽網絡，離線聊天會優先經藍芽通訊。';
+    }
+    if (controller.bluetoothEnabled) {
+      return '藍芽已開啟，可到系統設定啟用藍芽網絡共享。';
+    }
+    return '藍芽未開啟，可先到藍芽設定配對裝置。';
+  }
+}
+
+class _CredentialBox extends StatelessWidget {
+  const _CredentialBox({
+    required this.title,
+    required this.ssid,
+    required this.passphrase,
+    required this.detail,
+    this.ssidLabel = 'SSID',
+    this.passphraseLabel = '密碼',
+  });
+
+  final String title;
+  final String? ssid;
+  final String? passphrase;
+  final String detail;
+  final String ssidLabel;
+  final String passphraseLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE7F0FF),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFC9D9F5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LocalizedText(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          SelectableText(_localizedUiText('$ssidLabel: ${ssid ?? '系統未提供'}')),
+          SelectableText(
+            _localizedUiText('$passphraseLabel: ${passphrase ?? '系統未提供'}'),
+          ),
+          const SizedBox(height: 4),
+          LocalizedText(detail, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+}
+
+class _P2pPeerTile extends StatelessWidget {
+  const _P2pPeerTile({required this.peer, required this.onConnect});
+
+  final WifiP2pPeer peer;
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE0E5DE)),
+        ),
+        child: Row(
+          children: [
+            const CircleAvatar(
+              radius: 18,
+              backgroundColor: Color(0xFFE7F0FF),
+              child: Icon(Icons.devices, size: 18, color: Color(0xFF285BAA)),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LocalizedText(
+                    peer.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  Row(
+                    children: [
+                      if (peer.isAppPeer) ...[
+                        const _AppPeerBadge(),
+                        const SizedBox(width: 6),
+                      ],
+                      Expanded(
+                        child: LocalizedText(
+                          peer.hasLanEndpoint
+                              ? '同一 WiFi · ${peer.host}:${peer.port}'
+                              : peer.isAppPeer
+                              ? '已開啟本 app · ${peer.statusText}'
+                              : 'Wi‑Fi Direct 裝置 · ${peer.statusText}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: _localizedUiText(
+                peer.hasLanEndpoint ? '連接 LAN peer' : '連接 P2P',
+              ),
+              onPressed: onConnect,
+              icon: const Icon(Icons.link),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AppPeerBadge extends StatelessWidget {
+  const _AppPeerBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF4FF),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFC9DDF7)),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: LocalizedText(
+          'APP',
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+        ),
+      ),
+    );
+  }
+}
+
+class _WifiNetworkTile extends StatelessWidget {
+  const _WifiNetworkTile({
+    required this.network,
+    required this.selected,
+    required this.onSelect,
+    required this.onConnect,
+  });
+
+  final WifiNetworkInfo network;
+  final bool selected;
+  final VoidCallback onSelect;
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onConnect,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xFFE0F2E9) : Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: selected
+                    ? const Color(0xFF0D7C66)
+                    : const Color(0xFFE0E5DE),
+              ),
+            ),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: Colors.white,
+                  child: Icon(
+                    network.secured ? Icons.lock : Icons.lock_open,
+                    size: 18,
+                    color: const Color(0xFF0D7C66),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: LocalizedText(
+                              network.ssid,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          if (network.isMeshNetwork)
+                            const Padding(
+                              padding: EdgeInsets.only(left: 6),
+                              child: _MeshNetworkBadge(),
+                            ),
+                        ],
+                      ),
+                      LocalizedText(
+                        '${network.level} dBm · ${network.frequency} MHz',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                if (selected)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 4),
+                    child: Icon(Icons.check_circle, color: Color(0xFF0D7C66)),
+                  ),
+                IconButton(
+                  tooltip: _localizedUiText('連接 WiFi'),
+                  onPressed: onConnect,
+                  icon: const Icon(Icons.login),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MeshNetworkBadge extends StatelessWidget {
+  const _MeshNetworkBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFE0F2E9),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFB9DDC8)),
+      ),
+      child: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: LocalizedText(
+          'MESH',
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyWireless extends StatelessWidget {
+  const _EmptyWireless({required this.controller});
+
+  final WifiMeshController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = controller.transportMode == WifiTransportMode.bluetooth
+        ? controller.isIOS
+              ? '未有藍芽 peer。先按「權限」，再按「藍芽刷新」。'
+              : '未偵測到藍芽網絡。請先在系統開啟藍芽網絡共享，再按「藍芽刷新」。'
+        : controller.scansLanPeers
+        ? '未有同一 WiFi 內的 app peers。先按「權限」，允許本地網絡，再掃 LAN。'
+        : '未有 Wi‑Fi Direct app peers 或 WiFi 掃描結果。先按「權限」，再掃 P2P。';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFBF7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE0E5DE)),
+      ),
+      child: LocalizedText(message),
+    );
+  }
+}
+
+enum _ChatToolsTab { users, help, rooms, supplies }
+
+enum _UserModerationAction { report, block }
+
+enum _MessageModerationAction { report, block, delete }
+
+class _ChatPanel extends StatefulWidget {
+  const _ChatPanel({
+    required this.mesh,
+    required this.messageController,
+    required this.scrollController,
+    required this.onSend,
+    required this.onCreateRoom,
+    required this.onCreateHelpRequest,
+    required this.onShareSupply,
+    required this.onQuoteUserName,
+    required this.onEditUserName,
+    required this.onOpenSafetyCenter,
+    required this.onReportMessage,
+    required this.onBlockUser,
+    required this.onDeleteMessage,
+    required this.onReportUser,
+  });
+
+  final MeshChatService mesh;
+  final TextEditingController messageController;
+  final ScrollController scrollController;
+  final Future<void> Function() onSend;
+  final Future<void> Function() onCreateRoom;
+  final Future<void> Function() onCreateHelpRequest;
+  final Future<void> Function() onShareSupply;
+  final ValueChanged<String> onQuoteUserName;
+  final VoidCallback onEditUserName;
+  final VoidCallback onOpenSafetyCenter;
+  final ValueChanged<MeshMessage> onReportMessage;
+  final void Function(String userId, String userName) onBlockUser;
+  final ValueChanged<MeshMessage> onDeleteMessage;
+  final ValueChanged<MeshOnlineUser> onReportUser;
+
+  @override
+  State<_ChatPanel> createState() => _ChatPanelState();
+}
+
+class _ChatPanelState extends State<_ChatPanel> {
+  var _activeToolTab = _ChatToolsTab.users;
+  String? _lastObservedRoomId;
+  String? _lastObservedMessageId;
+  var _lastObservedMessageCount = 0;
+  var _needsScrollToEnd = false;
+  var _scrollFrameQueued = false;
+
+  void _observeMessages(MeshRoom activeRoom, List<MeshMessage> messages) {
+    final lastMessageId = messages.isEmpty ? null : messages.last.id;
+    final roomChanged = _lastObservedRoomId != activeRoom.id;
+    final messagesChanged =
+        _lastObservedMessageId != lastMessageId ||
+        _lastObservedMessageCount != messages.length;
+
+    if (!roomChanged && !messagesChanged) {
+      if (_needsScrollToEnd) {
+        _queueScrollToEnd();
+      }
+      return;
+    }
+
+    _lastObservedRoomId = activeRoom.id;
+    _lastObservedMessageId = lastMessageId;
+    _lastObservedMessageCount = messages.length;
+
+    if (messages.isNotEmpty) {
+      _needsScrollToEnd = true;
+      _queueScrollToEnd();
+    }
+  }
+
+  void _queueScrollToEnd() {
+    if (_scrollFrameQueued) {
+      return;
+    }
+
+    _scrollFrameQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollFrameQueued = false;
+      if (!mounted || !_needsScrollToEnd) {
+        return;
+      }
+
+      final scrollController = widget.scrollController;
+      if (!scrollController.hasClients) {
+        return;
+      }
+
+      _needsScrollToEnd = false;
+      scrollController.animateTo(
+        scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  Widget _buildActiveToolPanel() {
+    return switch (_activeToolTab) {
+      _ChatToolsTab.users => _OnlineUsersStrip(
+        key: const ValueKey('chat-tools-users'),
+        users: widget.mesh.onlineUsers,
+        onQuoteUserName: widget.onQuoteUserName,
+        onEditUserName: widget.onEditUserName,
+        onLikeUser: widget.mesh.likeUser,
+        onReportUser: widget.onReportUser,
+        onBlockUser: widget.onBlockUser,
+        showTitle: false,
+      ),
+      _ChatToolsTab.rooms => _RoomSelector(
+        key: const ValueKey('chat-tools-rooms'),
+        rooms: widget.mesh.rooms,
+        activeRoomId: widget.mesh.activeRoom.id,
+        onSelectRoom: widget.mesh.setActiveRoom,
+        onCreateRoom: widget.onCreateRoom,
+      ),
+      _ChatToolsTab.help => _HelpRequestStrip(
+        key: const ValueKey('chat-tools-help'),
+        requests: widget.mesh.helpRequests,
+        onCreateHelpRequest: widget.onCreateHelpRequest,
+        onQuoteUserName: widget.onQuoteUserName,
+        canMarkResolved: widget.mesh.canMarkHelpRequestResolved,
+        onMarkResolved: widget.mesh.markHelpRequestResolved,
+      ),
+      _ChatToolsTab.supplies => _SupplyShareStrip(
+        key: const ValueKey('chat-tools-supplies'),
+        supplies: widget.mesh.supplies,
+        onShareSupply: widget.onShareSupply,
+        onQuoteUserName: widget.onQuoteUserName,
+        canMarkTaken: widget.mesh.canMarkSupplyTaken,
+        onMarkTaken: widget.mesh.markSupplyTaken,
+        showTitle: false,
+      ),
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activeRoom = widget.mesh.activeRoom;
+    final messages = widget.mesh.activeRoomMessages;
+    final isEnglish =
+        _AppLanguageScope.of(context).language == AppLanguage.english;
+    _observeMessages(activeRoom, messages);
+
+    return Card(
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: Color(0xFFE0E5DE))),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.forum_outlined, color: Color(0xFF0D7C66)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: LocalizedText(
+                        activeRoom.name,
+                        key: const ValueKey('active-room-name'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    LocalizedText(
+                      _tr(
+                        context,
+                        '${messages.length} messages',
+                        '${messages.length} 則',
+                        '${messages.length} 条',
+                      ),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton(
+                      tooltip: _tr(
+                        context,
+                        'Chat safety & reporting',
+                        '聊天安全與舉報',
+                        '聊天安全与举报',
+                      ),
+                      onPressed: widget.onOpenSafetyCenter,
+                      icon: const Icon(Icons.shield_outlined),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<_ChatToolsTab>(
+                    key: const ValueKey('chat-tools-tabs'),
+                    showSelectedIcon: false,
+                    segments: [
+                      ButtonSegment<_ChatToolsTab>(
+                        value: _ChatToolsTab.users,
+                        icon: const Icon(Icons.people_alt_outlined),
+                        label: LocalizedText(
+                          _tr(context, 'Online', '在線', '在线'),
+                        ),
+                      ),
+                      ButtonSegment<_ChatToolsTab>(
+                        value: _ChatToolsTab.help,
+                        icon: const Icon(Icons.support_agent),
+                        label: LocalizedText(_tr(context, 'Help', '求助', '求助')),
+                      ),
+                      ButtonSegment<_ChatToolsTab>(
+                        value: _ChatToolsTab.rooms,
+                        icon: const Icon(Icons.bubble_chart_outlined),
+                        label: LocalizedText(
+                          _tr(context, 'Groups', '光團', '光团'),
+                        ),
+                      ),
+                      ButtonSegment<_ChatToolsTab>(
+                        value: _ChatToolsTab.supplies,
+                        icon: const Icon(Icons.inventory_2_outlined),
+                        label: LocalizedText(
+                          _tr(context, 'Supplies', '物資', '物资'),
+                        ),
+                      ),
+                    ],
+                    selected: {_activeToolTab},
+                    onSelectionChanged: (selection) {
+                      setState(() => _activeToolTab = selection.single);
+                    },
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      iconSize: 12,
+                      textStyle: TextStyle(
+                        fontSize: isEnglish ? 9 : 11,
+                        fontWeight: FontWeight.w600,
+                        height: 1,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  child: _buildActiveToolPanel(),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: messages.isEmpty
+                ? const _EmptyMessages()
+                : ListView.builder(
+                    controller: widget.scrollController,
+                    padding: const EdgeInsets.all(14),
+                    itemCount: messages.length,
+                    itemBuilder: (context, index) {
+                      return _MessageBubble(
+                        message: messages[index],
+                        onReport: widget.onReportMessage,
+                        onBlockUser: widget.onBlockUser,
+                        onDelete: widget.onDeleteMessage,
+                      );
+                    },
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('chat-message-input'),
+                    controller: widget.messageController,
+                    minLines: 1,
+                    maxLines: 4,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => unawaited(widget.onSend()),
+                    decoration: InputDecoration(
+                      hintText: _tr(
+                        context,
+                        'Send to ${activeRoom.name}',
+                        '傳送到 ${activeRoom.name}',
+                        '发送到 ${activeRoom.name}',
+                      ),
+                      prefixIcon: const Icon(Icons.chat_bubble_outline),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                IconButton.filled(
+                  tooltip: _tr(context, 'Send', '送出', '发送'),
+                  onPressed: () => unawaited(widget.onSend()),
+                  icon: const Icon(Icons.send),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OnlineUsersStrip extends StatelessWidget {
+  const _OnlineUsersStrip({
+    super.key,
+    required this.users,
+    required this.onQuoteUserName,
+    required this.onEditUserName,
+    required this.onLikeUser,
+    required this.onReportUser,
+    required this.onBlockUser,
+    this.showTitle = true,
+  });
+
+  final List<MeshOnlineUser> users;
+  final ValueChanged<String> onQuoteUserName;
+  final VoidCallback onEditUserName;
+  final ValueChanged<String> onLikeUser;
+  final ValueChanged<MeshOnlineUser> onReportUser;
+  final void Function(String userId, String userName) onBlockUser;
+  final bool showTitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final onlineCount = users.length;
+    final sosCount = users.where((user) => user.isSosActive).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Row(
+                children: [
+                  if (showTitle) ...[
+                    const Icon(Icons.people_alt_outlined, size: 16),
+                    const SizedBox(width: 6),
+                    LocalizedText(
+                      '在線用家',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Flexible(
+                    child: LocalizedText(
+                      '$onlineCount 人在線',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF66756D),
+                      ),
+                    ),
+                  ),
+                  if (sosCount > 0) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.warning_amber,
+                      size: 16,
+                      color: Color(0xFFB00020),
+                    ),
+                    const SizedBox(width: 3),
+                    LocalizedText(
+                      '求救 $sosCount',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFFB00020),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            TextButton.icon(
+              key: const ValueKey('online-user-list-button'),
+              onPressed: () => _openOnlineUserList(context),
+              icon: const Icon(Icons.manage_search, size: 14),
+              label: LocalizedText(
+                _tr(context, 'Find', '找人', '找人'),
+                style: const TextStyle(fontSize: 11),
+              ),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 48,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            itemCount: users.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) {
+              final user = users[index];
+              final label = user.isMe ? '${user.name}（你）' : user.name;
+              final isSosActive = user.isSosActive;
+              return DecoratedBox(
+                key: ValueKey('online-user-card-${user.id}'),
+                decoration: BoxDecoration(
+                  color: isSosActive
+                      ? const Color(0xFFFFEEE9)
+                      : user.isMe
+                      ? const Color(0xFFE0F2E9)
+                      : const Color(0xFFFAFBF7),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isSosActive
+                        ? const Color(0xFFE0B8AE)
+                        : const Color(0xFFD7DED7),
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 6, right: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ActionChip(
+                        key: ValueKey(user.isMe ? 'online-user-me' : user.id),
+                        avatar: Icon(
+                          isSosActive
+                              ? Icons.warning_amber
+                              : user.isMe
+                              ? Icons.person_pin_circle
+                              : Icons.person_outline,
+                          size: 16,
+                          color: isSosActive ? const Color(0xFFB00020) : null,
+                        ),
+                        label: LocalizedText(
+                          isSosActive
+                              ? '$label · 求救 · 信用 ${user.creditScore}'
+                              : '$label · 信用 ${user.creditScore}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        side: BorderSide.none,
+                        backgroundColor: Colors.transparent,
+                        tooltip: _localizedUiText(
+                          user.isMe ? '更改用戶名稱' : '引用名稱聊天',
+                        ),
+                        onPressed: user.isMe
+                            ? onEditUserName
+                            : () => onQuoteUserName(user.name),
+                      ),
+                      LocalizedTooltip(
+                        message: user.isMe
+                            ? '不能為自己加信用分'
+                            : user.likedByMe
+                            ? '已加信用分'
+                            : '為光點加信用分',
+                        child: IconButton(
+                          key: ValueKey('like-online-user-${user.id}'),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 32,
+                          ),
+                          onPressed: user.isMe || user.likedByMe
+                              ? null
+                              : () => onLikeUser(user.id),
+                          icon: Icon(
+                            user.likedByMe
+                                ? Icons.thumb_up_alt
+                                : Icons.thumb_up_alt_outlined,
+                            size: 18,
+                          ),
+                        ),
+                      ),
+                      if (!user.isMe)
+                        PopupMenuButton<_UserModerationAction>(
+                          key: ValueKey('moderate-online-user-${user.id}'),
+                          tooltip: _localizedUiText('用戶安全選項'),
+                          icon: const Icon(Icons.more_vert, size: 18),
+                          padding: EdgeInsets.zero,
+                          onSelected: (action) {
+                            switch (action) {
+                              case _UserModerationAction.report:
+                                onReportUser(user);
+                                break;
+                              case _UserModerationAction.block:
+                                onBlockUser(user.id, user.name);
+                                break;
+                            }
+                          },
+                          itemBuilder: (context) => const [
+                            PopupMenuItem<_UserModerationAction>(
+                              value: _UserModerationAction.report,
+                              child: ListTile(
+                                leading: Icon(Icons.flag_outlined),
+                                title: LocalizedText('舉報用戶'),
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                            PopupMenuItem<_UserModerationAction>(
+                              value: _UserModerationAction.block,
+                              child: ListTile(
+                                leading: Icon(Icons.block),
+                                title: LocalizedText('封鎖用戶'),
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _openOnlineUserList(BuildContext context) {
+    var query = '';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final cleanQuery = query.trim();
+            final filteredUsers = cleanQuery.isEmpty
+                ? users
+                : users
+                      .where((user) => user.name.contains(cleanQuery))
+                      .toList();
+            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.75;
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottomInset),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxHeight),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.people_alt_outlined,
+                            size: 18,
+                            color: Color(0xFF0D7C66),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LocalizedText(
+                              '在線用家',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          LocalizedText(
+                            '${filteredUsers.length}/${users.length}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF66756D)),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            tooltip: _localizedUiText('關閉'),
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        key: const ValueKey('online-user-search-input'),
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: _localizedUiText('搜尋用戶或光點名稱'),
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (value) {
+                          setSheetState(() => query = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      if (filteredUsers.isEmpty)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFBF7),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFE0E5DE)),
+                          ),
+                          child: const LocalizedText('找不到符合的在線光點。'),
+                        )
+                      else
+                        Flexible(
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filteredUsers.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final user = filteredUsers[index];
+                              return _OnlineUserListTile(
+                                key: ValueKey('online-user-list-${user.id}'),
+                                user: user,
+                                onEditUserName: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onEditUserName();
+                                },
+                                onQuoteUserName: (name) {
+                                  Navigator.of(sheetContext).pop();
+                                  onQuoteUserName(name);
+                                },
+                                onLikeUser: (userId) {
+                                  Navigator.of(sheetContext).pop();
+                                  onLikeUser(userId);
+                                },
+                                onReportUser: (user) {
+                                  Navigator.of(sheetContext).pop();
+                                  onReportUser(user);
+                                },
+                                onBlockUser: (user) {
+                                  Navigator.of(sheetContext).pop();
+                                  onBlockUser(user.id, user.name);
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _OnlineUserListTile extends StatelessWidget {
+  const _OnlineUserListTile({
+    super.key,
+    required this.user,
+    required this.onEditUserName,
+    required this.onQuoteUserName,
+    required this.onLikeUser,
+    required this.onReportUser,
+    required this.onBlockUser,
+  });
+
+  final MeshOnlineUser user;
+  final VoidCallback onEditUserName;
+  final ValueChanged<String> onQuoteUserName;
+  final ValueChanged<String> onLikeUser;
+  final ValueChanged<MeshOnlineUser> onReportUser;
+  final ValueChanged<MeshOnlineUser> onBlockUser;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = user.isMe ? '${user.name}（你）' : user.name;
+    final isSosActive = user.isSosActive;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(
+        radius: 18,
+        backgroundColor: isSosActive
+            ? const Color(0xFFFFEEE9)
+            : user.isMe
+            ? const Color(0xFFE0F2E9)
+            : const Color(0xFFFAFBF7),
+        child: Icon(
+          isSosActive
+              ? Icons.warning_amber
+              : user.isMe
+              ? Icons.person_pin_circle
+              : Icons.person_outline,
+          size: 18,
+          color: isSosActive
+              ? const Color(0xFFB00020)
+              : const Color(0xFF0D7C66),
+        ),
+      ),
+      title: LocalizedText(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+      subtitle: LocalizedText(
+        isSosActive
+            ? '求救光點 · 信用 ${user.creditScore}'
+            : '信用 ${user.creditScore}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: _localizedUiText(user.isMe ? '更改用戶名稱' : '引用名稱聊天'),
+            onPressed: user.isMe
+                ? onEditUserName
+                : () => onQuoteUserName(user.name),
+            icon: Icon(user.isMe ? Icons.edit_outlined : Icons.format_quote),
+          ),
+          IconButton(
+            key: ValueKey('like-listed-online-user-${user.id}'),
+            tooltip: _localizedUiText(
+              user.isMe
+                  ? '不能為自己加信用分'
+                  : user.likedByMe
+                  ? '已加信用分'
+                  : '為光點加信用分',
+            ),
+            onPressed: user.isMe || user.likedByMe
+                ? null
+                : () => onLikeUser(user.id),
+            icon: Icon(
+              user.likedByMe ? Icons.thumb_up_alt : Icons.thumb_up_alt_outlined,
+            ),
+          ),
+          if (!user.isMe)
+            PopupMenuButton<_UserModerationAction>(
+              key: ValueKey('moderate-listed-online-user-${user.id}'),
+              tooltip: _localizedUiText('用戶安全選項'),
+              onSelected: (action) {
+                switch (action) {
+                  case _UserModerationAction.report:
+                    onReportUser(user);
+                    break;
+                  case _UserModerationAction.block:
+                    onBlockUser(user);
+                    break;
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem<_UserModerationAction>(
+                  value: _UserModerationAction.report,
+                  child: ListTile(
+                    leading: Icon(Icons.flag_outlined),
+                    title: LocalizedText('舉報用戶'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+                PopupMenuItem<_UserModerationAction>(
+                  value: _UserModerationAction.block,
+                  child: ListTile(
+                    leading: Icon(Icons.block),
+                    title: LocalizedText('封鎖用戶'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+      onTap: user.isMe ? onEditUserName : () => onQuoteUserName(user.name),
+    );
+  }
+}
+
+class _RoomSelector extends StatelessWidget {
+  const _RoomSelector({
+    super.key,
+    required this.rooms,
+    required this.activeRoomId,
+    required this.onSelectRoom,
+    required this.onCreateRoom,
+  });
+
+  final List<MeshRoom> rooms;
+  final String activeRoomId;
+  final ValueChanged<String> onSelectRoom;
+  final Future<void> Function() onCreateRoom;
+
+  @override
+  Widget build(BuildContext context) {
+    final activeRoom = rooms.firstWhere(
+      (room) => room.id == activeRoomId,
+      orElse: () => rooms.isEmpty
+          ? MeshRoom(
+              id: activeRoomId,
+              name: '傳播頻道',
+              createdBy: '',
+              createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+            )
+          : rooms.first,
+    );
+
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            key: const ValueKey('room-list-button'),
+            onPressed: () => _openRoomList(context),
+            icon: const Icon(Icons.manage_search, size: 16),
+            label: LocalizedText(
+              '光團：${activeRoom.name}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            style: OutlinedButton.styleFrom(
+              alignment: Alignment.centerLeft,
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        OutlinedButton.icon(
+          onPressed: () => unawaited(onCreateRoom()),
+          icon: const Icon(Icons.add),
+          label: const LocalizedText('建立光團'),
+        ),
+      ],
+    );
+  }
+
+  void _openRoomList(BuildContext context) {
+    var query = '';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final cleanQuery = query.trim();
+            final filteredRooms = cleanQuery.isEmpty
+                ? rooms
+                : rooms
+                      .where((room) => room.name.contains(cleanQuery))
+                      .toList();
+            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.75;
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottomInset),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxHeight),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.bubble_chart_outlined,
+                            size: 18,
+                            color: Color(0xFF0D7C66),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LocalizedText(
+                              '光團列表',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          LocalizedText(
+                            '${filteredRooms.length}/${rooms.length}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF66756D)),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            tooltip: _localizedUiText('關閉'),
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        key: const ValueKey('room-search-input'),
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: _localizedUiText('搜尋光團名稱'),
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (value) {
+                          setSheetState(() => query = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      if (filteredRooms.isEmpty)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFBF7),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFE0E5DE)),
+                          ),
+                          child: const LocalizedText('找不到符合的光團。'),
+                        )
+                      else
+                        Flexible(
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filteredRooms.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final room = filteredRooms[index];
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: CircleAvatar(
+                                  radius: 18,
+                                  backgroundColor: room.id == activeRoomId
+                                      ? const Color(0xFFE0F2E9)
+                                      : const Color(0xFFFAFBF7),
+                                  child: Icon(
+                                    room.id == activeRoomId
+                                        ? Icons.check
+                                        : Icons.bubble_chart_outlined,
+                                    size: 18,
+                                    color: const Color(0xFF0D7C66),
+                                  ),
+                                ),
+                                title: LocalizedText(
+                                  room.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                subtitle: LocalizedText(
+                                  room.id == activeRoomId
+                                      ? '目前光團'
+                                      : '建立於 ${_formatRoomTime(room.createdAt)}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onTap: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onSelectRoom(room.id);
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static String _formatRoomTime(DateTime time) {
+    final local = time.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+}
+
+class _HelpRequestStrip extends StatelessWidget {
+  const _HelpRequestStrip({
+    super.key,
+    required this.requests,
+    required this.onCreateHelpRequest,
+    required this.onQuoteUserName,
+    required this.canMarkResolved,
+    required this.onMarkResolved,
+  });
+
+  final List<MeshHelpRequest> requests;
+  final Future<void> Function() onCreateHelpRequest;
+  final ValueChanged<String> onQuoteUserName;
+  final bool Function(MeshHelpRequest request) canMarkResolved;
+  final ValueChanged<String> onMarkResolved;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        LocalizedText(
+          '${requests.length} 項求助',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
+        ),
+        const Spacer(),
+        TextButton.icon(
+          key: const ValueKey('help-list-button'),
+          onPressed: () => _openHelpList(context),
+          icon: const Icon(Icons.manage_search, size: 16),
+          label: const LocalizedText('尋找求助'),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 32),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        const SizedBox(width: 6),
+        OutlinedButton.icon(
+          key: const ValueKey('create-help-button'),
+          onPressed: () => unawaited(onCreateHelpRequest()),
+          icon: const Icon(Icons.add_alert_outlined, size: 16),
+          label: const LocalizedText('新增求助'),
+          style: OutlinedButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _openHelpList(BuildContext context) {
+    var query = '';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final cleanQuery = query.trim();
+            final filteredRequests = cleanQuery.isEmpty
+                ? requests
+                : requests
+                      .where(
+                        (request) =>
+                            _matchesHelpRequestQuery(request, cleanQuery),
+                      )
+                      .toList();
+            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.75;
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottomInset),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxHeight),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.support_agent,
+                            size: 18,
+                            color: Color(0xFF0D7C66),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LocalizedText(
+                              '求助列表',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          LocalizedText(
+                            '${filteredRequests.length}/${requests.length}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF66756D)),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            tooltip: _localizedUiText('關閉'),
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        key: const ValueKey('help-search-input'),
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: _localizedUiText('搜尋求助、地點或求助者'),
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (value) {
+                          setSheetState(() => query = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      if (filteredRequests.isEmpty)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFBF7),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFE0E5DE)),
+                          ),
+                          child: LocalizedText(
+                            requests.isEmpty ? '暫未有人求助。' : '找不到符合的求助。',
+                          ),
+                        )
+                      else
+                        Flexible(
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filteredRequests.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final request = filteredRequests[index];
+                              return _HelpRequestListTile(
+                                request: request,
+                                canMarkResolved: canMarkResolved(request),
+                                onQuoteUserName: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onQuoteUserName(request.requesterName);
+                                },
+                                onMarkResolved: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onMarkResolved(request.id);
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static bool _matchesHelpRequestQuery(MeshHelpRequest request, String query) {
+    return request.title.contains(query) ||
+        request.details.contains(query) ||
+        request.requesterName.contains(query);
+  }
+}
+
+class _HelpRequestListTile extends StatelessWidget {
+  const _HelpRequestListTile({
+    required this.request,
+    required this.canMarkResolved,
+    required this.onQuoteUserName,
+    required this.onMarkResolved,
+  });
+
+  final MeshHelpRequest request;
+  final bool canMarkResolved;
+  final VoidCallback onQuoteUserName;
+  final VoidCallback onMarkResolved;
+
+  @override
+  Widget build(BuildContext context) {
+    final details = request.details.isEmpty ? '未列地點或補充資料' : request.details;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(
+        radius: 18,
+        backgroundColor: request.isSosActive
+            ? const Color(0xFFFFEEE9)
+            : const Color(0xFFE0F2E9),
+        child: Icon(
+          request.isSosActive ? Icons.sos : Icons.support_agent,
+          size: 18,
+          color: request.isSosActive
+              ? const Color(0xFFB00020)
+              : const Color(0xFF0D7C66),
+        ),
+      ),
+      title: Row(
+        children: [
+          if (request.isSosActive) ...[
+            const _SosPriorityBadge(),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: LocalizedText(
+              request.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+      subtitle: LocalizedText(
+        '$details\n${request.requesterName} · ${_formatHelpTime(request.createdAt)}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Wrap(
+        spacing: 4,
+        children: [
+          IconButton(
+            tooltip: _localizedUiText('引用求助者名稱聊天'),
+            onPressed: onQuoteUserName,
+            icon: const Icon(Icons.alternate_email),
+          ),
+          if (canMarkResolved)
+            IconButton(
+              tooltip: _localizedUiText('標記已解決'),
+              onPressed: onMarkResolved,
+              icon: const Icon(Icons.task_alt),
+            ),
+        ],
+      ),
+      onTap: onQuoteUserName,
+    );
+  }
+
+  static String _formatHelpTime(DateTime time) {
+    final local = time.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+}
+
+class _SosPriorityBadge extends StatelessWidget {
+  const _SosPriorityBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFB00020),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: const material.Text(
+        'SOS',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+}
+
+class _SupplyShareStrip extends StatelessWidget {
+  const _SupplyShareStrip({
+    super.key,
+    required this.supplies,
+    required this.onShareSupply,
+    required this.onQuoteUserName,
+    required this.canMarkTaken,
+    required this.onMarkTaken,
+    this.showTitle = true,
+  });
+
+  final List<MeshSupply> supplies;
+  final Future<void> Function() onShareSupply;
+  final ValueChanged<String> onQuoteUserName;
+  final bool Function(MeshSupply supply) canMarkTaken;
+  final ValueChanged<String> onMarkTaken;
+  final bool showTitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasSupplies = supplies.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (showTitle) ...[
+              const Icon(Icons.inventory_2_outlined, size: 16),
+              const SizedBox(width: 6),
+              LocalizedText(
+                '物資分享',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(width: 8),
+            ],
+            LocalizedText(
+              '${supplies.length} 項',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
+            ),
+            const Spacer(),
+            TextButton.icon(
+              key: const ValueKey('supply-list-button'),
+              onPressed: () => _openSupplyList(context),
+              icon: const Icon(Icons.manage_search, size: 16),
+              label: const LocalizedText('找物資'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+            const SizedBox(width: 6),
+            OutlinedButton.icon(
+              onPressed: () => unawaited(onShareSupply()),
+              icon: const Icon(Icons.swap_horiz, size: 16),
+              label: const LocalizedText('分享 / 交換'),
+              style: OutlinedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+            ),
+          ],
+        ),
+        if (!hasSupplies) ...[
+          const SizedBox(height: 4),
+          LocalizedText(
+            '暫未有人分享物資。',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _openSupplyList(BuildContext context) {
+    var query = '';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final cleanQuery = query.trim();
+            final filteredSupplies = cleanQuery.isEmpty
+                ? supplies
+                : supplies
+                      .where(
+                        (supply) => _matchesSupplyQuery(supply, cleanQuery),
+                      )
+                      .toList();
+            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.75;
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottomInset),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxHeight),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.inventory_2_outlined,
+                            size: 18,
+                            color: Color(0xFF0D7C66),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LocalizedText(
+                              '物資列表',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          LocalizedText(
+                            '${filteredSupplies.length}/${supplies.length}',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: const Color(0xFF66756D)),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            tooltip: _localizedUiText('關閉'),
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        key: const ValueKey('supply-search-input'),
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          labelText: _localizedUiText('搜尋物資、數量、地點或分享者'),
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (value) {
+                          setSheetState(() => query = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      if (filteredSupplies.isEmpty)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAFBF7),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFE0E5DE)),
+                          ),
+                          child: LocalizedText(
+                            supplies.isEmpty ? '暫未有人分享物資。' : '找不到符合的物資。',
+                          ),
+                        )
+                      else
+                        Flexible(
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filteredSupplies.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final supply = filteredSupplies[index];
+                              return _SupplyListTile(
+                                supply: supply,
+                                canMarkTaken: canMarkTaken(supply),
+                                onQuoteUserName: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onQuoteUserName(supply.offeredByName);
+                                },
+                                onMarkTaken: () {
+                                  Navigator.of(sheetContext).pop();
+                                  onMarkTaken(supply.id);
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static bool _matchesSupplyQuery(MeshSupply supply, String query) {
+    return supply.title.contains(query) ||
+        supply.quantity.contains(query) ||
+        supply.note.contains(query) ||
+        supply.exchangeFor.contains(query) ||
+        (supply.isExchange && '交換物資'.contains(query)) ||
+        (!supply.isExchange && '免費分享'.contains(query)) ||
+        supply.offeredByName.contains(query);
+  }
+}
+
+class _SupplyListTile extends StatelessWidget {
+  const _SupplyListTile({
+    required this.supply,
+    required this.canMarkTaken,
+    required this.onQuoteUserName,
+    required this.onMarkTaken,
+  });
+
+  final MeshSupply supply;
+  final bool canMarkTaken;
+  final VoidCallback onQuoteUserName;
+  final VoidCallback onMarkTaken;
+
+  @override
+  Widget build(BuildContext context) {
+    final quantity = supply.quantity.isEmpty ? '未列數量' : supply.quantity;
+    final note = supply.note.isEmpty ? '未列交收資料' : supply.note;
+    final exchangeDetails = supply.isExchange
+        ? supply.exchangeFor.isEmpty
+              ? '交換物資'
+              : '希望交換：${supply.exchangeFor}'
+        : '免費分享';
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(
+        radius: 18,
+        backgroundColor: supply.isExchange
+            ? const Color(0xFFFFF3D6)
+            : const Color(0xFFE0F2E9),
+        child: Icon(
+          supply.isExchange
+              ? Icons.swap_horiz
+              : Icons.volunteer_activism_outlined,
+          size: 18,
+          color: supply.isExchange
+              ? const Color(0xFF8A5A00)
+              : const Color(0xFF0D7C66),
+        ),
+      ),
+      title: LocalizedText(
+        supply.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+      subtitle: LocalizedText(
+        '$exchangeDetails · $quantity · $note\n${supply.offeredByName} · ${_formatShortTime(supply.createdAt)}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Wrap(
+        spacing: 4,
+        children: [
+          IconButton(
+            tooltip: _localizedUiText('Tag 發起人回覆'),
+            onPressed: onQuoteUserName,
+            icon: const Icon(Icons.alternate_email),
+          ),
+          if (canMarkTaken)
+            IconButton(
+              tooltip: _localizedUiText('標記已取完'),
+              onPressed: onMarkTaken,
+              icon: const Icon(Icons.task_alt),
+            ),
+        ],
+      ),
+      onTap: onQuoteUserName,
+    );
+  }
+
+  static String _formatShortTime(DateTime time) {
+    final local = time.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+}
+
+class _EmptyMessages extends StatelessWidget {
+  const _EmptyMessages();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 68,
+                height: 68,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE0F2E9),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.light_mode_outlined,
+                  color: Color(0xFF0D7C66),
+                  size: 34,
+                ),
+              ),
+              const SizedBox(height: 14),
+              LocalizedText(
+                '未有訊息',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              const LocalizedText(
+                '同一 WiFi、熱點或已互通的 mesh 網段內，用戶開啟此 app 後即可互相傳訊。',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({
+    required this.message,
+    required this.onReport,
+    required this.onBlockUser,
+    required this.onDelete,
+  });
+
+  final MeshMessage message;
+  final ValueChanged<MeshMessage> onReport;
+  final void Function(String userId, String userName) onBlockUser;
+  final ValueChanged<MeshMessage> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final alignment = message.isMine
+        ? CrossAxisAlignment.end
+        : CrossAxisAlignment.start;
+    final bubbleColor = message.isMine
+        ? const Color(0xFF0D7C66)
+        : const Color(0xFFF0F3EE);
+    final textColor = message.isMine ? Colors.white : const Color(0xFF17211E);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: alignment,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            textDirection: message.isMine
+                ? TextDirection.rtl
+                : TextDirection.ltr,
+            children: [
+              LocalizedText(
+                '${message.senderName} · ${_formatTime(message.sentAt)}',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
+              ),
+              PopupMenuButton<_MessageModerationAction>(
+                tooltip: _localizedUiText('訊息安全選項'),
+                icon: const Icon(Icons.more_vert, size: 18),
+                padding: EdgeInsets.zero,
+                onSelected: (action) {
+                  switch (action) {
+                    case _MessageModerationAction.report:
+                      onReport(message);
+                      break;
+                    case _MessageModerationAction.block:
+                      onBlockUser(message.senderId, message.senderName);
+                      break;
+                    case _MessageModerationAction.delete:
+                      onDelete(message);
+                      break;
+                  }
+                },
+                itemBuilder: (context) => [
+                  if (!message.isMine)
+                    const PopupMenuItem<_MessageModerationAction>(
+                      value: _MessageModerationAction.report,
+                      child: ListTile(
+                        leading: Icon(Icons.flag_outlined),
+                        title: LocalizedText('舉報訊息'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                  if (!message.isMine)
+                    const PopupMenuItem<_MessageModerationAction>(
+                      value: _MessageModerationAction.block,
+                      child: ListTile(
+                        leading: Icon(Icons.block),
+                        title: LocalizedText('封鎖用戶'),
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
+                  const PopupMenuItem<_MessageModerationAction>(
+                    value: _MessageModerationAction.delete,
+                    child: ListTile(
+                      leading: Icon(Icons.delete_outline),
+                      title: LocalizedText('從信息流刪除'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: bubbleColor,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: SelectableText(
+                  message.text,
+                  key: ValueKey('selectable-message-${message.id}'),
+                  style: TextStyle(color: textColor, height: 1.35),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatTime(DateTime time) {
+    final local = time.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+}
+
+class WifiMeshController extends ChangeNotifier {
+  WifiMeshController() {
+    if (_nativeWirelessBridgeAvailable) {
+      unawaited(refreshStatus());
+    } else {
+      _lastMessage = '目前平台未提供 Wi‑Fi peer 原生控制，可使用同一 WiFi LAN chat。';
+    }
+  }
+
+  static const MethodChannel _channel = MethodChannel(
+    'hk.aieco.propagation_light/wifi_mesh',
+  );
+
+  bool _busy = false;
+  bool _wifiDirectSupported = false;
+  bool _wifiPeerSupported = false;
+  bool _hotspotSupported = false;
+  bool _bluetoothSupported = false;
+  bool _wifiEnabled = false;
+  bool _bluetoothEnabled = false;
+  bool _boundToWifi = false;
+  bool _boundToBluetooth = false;
+  WifiTransportMode _transportMode = WifiTransportMode.wifi;
+  int _networkGeneration = 0;
+  String _lastMessage = '正在讀取 Wi‑Fi mesh 狀態。';
+  WifiP2pConnection? _connection;
+  WifiDirectGroup? _group;
+  WifiHotspotInfo? _hotspot;
+  List<WifiP2pPeer> _p2pPeers = <WifiP2pPeer>[];
+  List<WifiNetworkInfo> _wifiNetworks = <WifiNetworkInfo>[];
+
+  bool get isAndroid => Platform.isAndroid;
+  bool get isIOS => Platform.isIOS;
+  bool get busy => _busy;
+  bool get wifiDirectSupported => _wifiDirectSupported;
+  bool get wifiPeerSupported => _wifiPeerSupported;
+  bool get scansLanPeers =>
+      isIOS ||
+      (_wifiPeerSupported &&
+          (_hotspot != null ||
+              (_boundToWifi && _connection?.groupFormed != true)));
+  bool get hotspotSupported => _hotspotSupported;
+  bool get bluetoothSupported => _bluetoothSupported;
+  bool get wifiEnabled => _wifiEnabled;
+  bool get bluetoothEnabled => _bluetoothEnabled;
+  bool get boundToWifi => _boundToWifi;
+  bool get boundToBluetooth => _boundToBluetooth;
+  WifiTransportMode get transportMode => _transportMode;
+  int get networkGeneration => _networkGeneration;
+  String get lastMessage => _lastMessage;
+  WifiP2pConnection? get connection => _connection;
+  WifiDirectGroup? get group => _group;
+  WifiHotspotInfo? get hotspot => _hotspot;
+  List<WifiP2pPeer> get p2pPeers => List.unmodifiable(_p2pPeers);
+  List<WifiNetworkInfo> get wifiNetworks => List.unmodifiable(_wifiNetworks);
+  WifiP2pPeer? get firstAppP2pPeer {
+    for (final peer in _p2pPeers) {
+      if (peer.isAppPeer && peer.canInvite) {
+        return peer;
+      }
+    }
+    return null;
+  }
+
+  WifiNetworkInfo? get firstMeshNetwork {
+    for (final network in _wifiNetworks) {
+      if (network.isMeshNetwork) {
+        return network;
+      }
+    }
+    return null;
+  }
+
+  void setLocalMessage(String message) {
+    _lastMessage = message;
+    notifyListeners();
+  }
+
+  String get summary {
+    if (_transportMode == WifiTransportMode.bluetooth) {
+      if (_boundToBluetooth) {
+        return '藍芽模式已連線';
+      }
+      if (!_bluetoothSupported) {
+        return isIOS ? 'iOS 藍芽 peer-to-peer 模式' : '此裝置未報告藍芽';
+      }
+      return _bluetoothEnabled ? '等待藍芽網絡' : '藍芽未開啟';
+    }
+    if (isIOS) {
+      if (_p2pPeers.isNotEmpty) {
+        return '已找到 ${_p2pPeers.length} 個 WiFi LAN peer';
+      }
+      return _boundToWifi ? '可掃描 WiFi LAN peers' : '等待同一 WiFi LAN';
+    }
+    if (!_nativeWirelessBridgeAvailable) {
+      return 'desktop 使用 LAN chat';
+    }
+    if (_connection?.groupFormed == true) {
+      return _connection!.isGroupOwner ? 'P2P 群組 owner' : '已接入 P2P 群組';
+    }
+    if (_hotspot != null) {
+      return 'AIECO 本地熱點已開啟';
+    }
+    if (_boundToBluetooth) {
+      return '已接入藍芽網絡';
+    }
+    if (_wifiPeerSupported && _boundToWifi) {
+      return '可掃描 WiFi LAN peers';
+    }
+    if (!_wifiDirectSupported && !_wifiPeerSupported && !_bluetoothSupported) {
+      return '此裝置未報告 Wi‑Fi Direct / 藍芽';
+    }
+    if (!_wifiDirectSupported) {
+      return _bluetoothEnabled ? '可使用藍芽熱點' : '藍芽未開啟';
+    }
+    return _wifiEnabled ? '可掃描 P2P / WiFi' : 'WiFi 未開啟';
+  }
+
+  Future<void> refreshStatus({bool quiet = false}) async {
+    await _callStatus(
+      'status',
+      successMessage: 'Wi‑Fi mesh 狀態已更新。',
+      showBusy: !quiet,
+      updateMessage: !quiet,
+    );
+  }
+
+  Future<void> requestPermissions({bool automatic = false}) async {
+    await _callStatus(
+      'requestPermissions',
+      successMessage: automatic
+          ? '已自動要求無線與定位權限。'
+          : isIOS
+          ? '已要求本地網絡權限。'
+          : '已要求 Wi‑Fi 權限。',
+    );
+  }
+
+  Future<void> discoverPeers() async {
+    await _callStatus(
+      'discoverPeers',
+      successMessage: scansLanPeers
+          ? '正在掃描 WiFi LAN peers。'
+          : '正在掃描 Wi‑Fi Direct peers。',
+    );
+  }
+
+  Future<void> discoverAppPeers() async {
+    await _callStatus(
+      'discoverAppPeers',
+      successMessage: scansLanPeers
+          ? '正在掃描同一 WiFi 內的 app peers。'
+          : '正在掃描 Wi‑Fi Direct app peers。',
+    );
+  }
+
+  Future<void> scanWifi() async {
+    await _callStatus('scanWifi', successMessage: '附近 WiFi 掃描已更新。');
+  }
+
+  Future<void> connectPeer(WifiP2pPeer peer) async {
+    await _callStatus(
+      'connectPeer',
+      arguments: <String, Object?>{
+        'deviceAddress': peer.address,
+        'host': peer.host,
+        'port': peer.port,
+      },
+      successMessage: peer.hasLanEndpoint
+          ? '已選取 ${peer.name}，正在用 WiFi LAN mesh 同步。'
+          : '已向 ${peer.name} 發出 Wi‑Fi Direct 連接邀請。',
+    );
+  }
+
+  Future<void> connectWifi(WifiNetworkInfo network) async {
+    await _callStatus(
+      'connectWifi',
+      arguments: <String, Object?>{'ssid': network.ssid, 'passphrase': ''},
+      successMessage: '已要求連接 WiFi：${network.ssid}',
+    );
+  }
+
+  Future<void> createGroup() async {
+    await _callStatus(
+      'createGroup',
+      successMessage: '已要求建立 Wi‑Fi Direct group。',
+    );
+  }
+
+  Future<void> removeGroup() async {
+    await _callStatus(
+      'removeGroup',
+      successMessage: '已要求移除 Wi‑Fi Direct group。',
+    );
+  }
+
+  Future<void> toggleHotspot() async {
+    if (_hotspot == null) {
+      await _callStatus(
+        'startLocalOnlyHotspot',
+        successMessage: 'AIECO 本地熱點已啟動。請把其他手機連到顯示的 SSID。',
+      );
+    } else {
+      await _callStatus('stopLocalOnlyHotspot', successMessage: '本地熱點已停止。');
+    }
+  }
+
+  Future<void> openWifiSettings() async {
+    await _callStatus(
+      'openWifiSettings',
+      successMessage: isIOS ? '已打開 iOS 設定。' : '已打開 WiFi 設定。',
+    );
+  }
+
+  Future<void> openBluetoothSettings() async {
+    await _callStatus('openBluetoothSettings', successMessage: '已打開藍芽設定。');
+  }
+
+  Future<void> openBluetoothTetherSettings() async {
+    await _callStatus(
+      'openBluetoothTetherSettings',
+      successMessage: '已打開熱點與網絡共享設定。',
+    );
+  }
+
+  Future<void> openAppSettings() async {
+    await _callStatus('openAppSettings', successMessage: '已打開 app 權限設定。');
+  }
+
+  Future<void> setTransportMode(WifiTransportMode mode) async {
+    _transportMode = mode;
+    notifyListeners();
+    await _callStatus(
+      'setTransportMode',
+      arguments: <String, Object?>{'mode': _transportModeName(mode)},
+      successMessage: mode == WifiTransportMode.bluetooth
+          ? '已切換藍芽模式。'
+          : '已切換 WiFi 模式。',
+      showBusy: false,
+      updateMessage: true,
+    );
+  }
+
+  Future<void> setPreferLocalNetwork(bool enabled) async {
+    await _callStatus(
+      'setPreferLocalNetwork',
+      arguments: <String, Object?>{'enabled': enabled},
+      successMessage: enabled ? '已切回本地 mesh 網絡。' : '已切回一般網絡路由。',
+      showBusy: false,
+      updateMessage: false,
+    );
+  }
+
+  Future<void> _callStatus(
+    String method, {
+    Object? arguments,
+    required String successMessage,
+    bool showBusy = true,
+    bool updateMessage = true,
+  }) async {
+    if (!_nativeWirelessBridgeAvailable) {
+      if (updateMessage) {
+        _lastMessage = '此功能需要手機系統提供原生 Wi‑Fi peer API。';
+        notifyListeners();
+      }
+      return;
+    }
+
+    if (showBusy) {
+      _busy = true;
+      notifyListeners();
+    }
+    try {
+      final result = await _channel.invokeMethod<Object?>(method, arguments);
+      if (result is Map) {
+        _applyStatus(Map<String, Object?>.from(result));
+      }
+      if (updateMessage) {
+        _lastMessage = _extractMessage(result) ?? successMessage;
+      }
+    } on PlatformException catch (error) {
+      if (updateMessage) {
+        _lastMessage = error.message ?? '無線操作失敗：${error.code}';
+        if (error.details is Map) {
+          final details = Map<String, Object?>.from(error.details as Map);
+          final missing = details['missing'];
+          if (missing is List && missing.isNotEmpty) {
+            _lastMessage = '缺少權限：${missing.join(', ')}。請按「權限」或到 App 設定允許。';
+          }
+        }
+      }
+    } on MissingPluginException {
+      if (updateMessage) {
+        _lastMessage = '目前平台未提供 Wi‑Fi mesh 原生控制。';
+      }
+    } finally {
+      if (showBusy) {
+        _busy = false;
+      }
+      notifyListeners();
+    }
+  }
+
+  void _applyStatus(Map<String, Object?> status) {
+    final capabilities = _mapValue(status['capabilities']);
+    _wifiDirectSupported = _boolValue(capabilities['wifiDirectSupported']);
+    _wifiPeerSupported = _boolValue(capabilities['wifiPeerSupported']);
+    _hotspotSupported = _boolValue(capabilities['localOnlyHotspotSupported']);
+    _bluetoothSupported = _boolValue(capabilities['bluetoothSupported']);
+    _wifiEnabled = _boolValue(status['wifiEnabled']);
+    _bluetoothEnabled = _boolValue(status['bluetoothEnabled']);
+    _boundToWifi = _boolValue(status['boundToWifi']);
+    _boundToBluetooth = _boolValue(status['boundToBluetooth']);
+    _transportMode = _transportModeFromName(status['transportMode']);
+    _networkGeneration = _intValue(status['networkGeneration']);
+    _connection = WifiP2pConnection.fromMap(_mapValue(status['connection']));
+    _group = WifiDirectGroup.fromMap(_mapValue(status['group']));
+    _hotspot = WifiHotspotInfo.fromMap(_mapValue(status['hotspot']));
+    _p2pPeers = _listOfMaps(status['peers'])
+        .map(WifiP2pPeer.fromMap)
+        .where((peer) => peer.address.isNotEmpty)
+        .toList();
+    _wifiNetworks = _listOfMaps(status['wifiNetworks'])
+        .map(WifiNetworkInfo.fromMap)
+        .where((network) => network.ssid.isNotEmpty)
+        .toList();
+  }
+
+  static String? _extractMessage(Object? result) {
+    if (result is Map && result['message'] is String) {
+      return result['message'] as String;
+    }
+    return null;
+  }
+
+  static Map<String, Object?> _mapValue(Object? value) {
+    if (value is Map) {
+      return Map<String, Object?>.from(value);
+    }
+    return <String, Object?>{};
+  }
+
+  static List<Map<String, Object?>> _listOfMaps(Object? value) {
+    if (value is List) {
+      return value
+          .whereType<Map>()
+          .map((item) => Map<String, Object?>.from(item))
+          .toList();
+    }
+    return <Map<String, Object?>>[];
+  }
+
+  static bool _boolValue(Object? value) => value == true;
+
+  static WifiTransportMode _transportModeFromName(Object? value) {
+    return value == 'bluetooth'
+        ? WifiTransportMode.bluetooth
+        : WifiTransportMode.wifi;
+  }
+
+  static String _transportModeName(WifiTransportMode mode) {
+    return switch (mode) {
+      WifiTransportMode.bluetooth => 'bluetooth',
+      WifiTransportMode.wifi => 'wifi',
+    };
+  }
+
+  static bool get _nativeWirelessBridgeAvailable =>
+      Platform.isAndroid || Platform.isIOS;
+}
+
+class LightRadarController extends ChangeNotifier {
+  static const MethodChannel _channel = MethodChannel(
+    'hk.aieco.propagation_light/wifi_mesh',
+  );
+
+  bool _busy = false;
+  DeviceLocation? _location;
+  String _message = '按「定位」讀取手機位置。';
+
+  bool get busy => _busy;
+  DeviceLocation? get location => _location;
+  String get message => _message;
+
+  Future<DeviceLocation?> locate(
+    String displayName, {
+    bool quiet = false,
+    bool lowPower = false,
+    Duration maxCacheAge = _radarActiveLocationCacheMaxAge,
+  }) async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      _message = '定位功能目前只在支援的原生端開放。';
+      notifyListeners();
+      return null;
+    }
+
+    if (!quiet) {
+      _busy = true;
+      _message = '正在讀取手機定位。';
+      notifyListeners();
+    }
+
+    var changed = false;
+
+    try {
+      final result = await _channel
+          .invokeMethod<Object?>('currentLocation', <String, Object?>{
+            'displayName': displayName,
+            'lowPower': lowPower,
+            'maxCacheAgeMillis': maxCacheAge.inMilliseconds,
+          });
+      if (result is Map) {
+        final map = Map<String, Object?>.from(result);
+        final nextLocation = DeviceLocation.fromMap(map);
+        changed = !quiet || _shouldReplaceLocation(_location, nextLocation);
+        if (changed) {
+          _location = nextLocation;
+          _message = _stringValue(
+            map['message'],
+            fallback: nextLocation.isInsideHongKong
+                ? '定位成功'
+                : '定位成功，位置在香港地圖範圍外',
+          );
+        }
+        return nextLocation;
+      } else {
+        if (!quiet) {
+          _message = '定位沒有回傳有效資料。';
+        }
+      }
+    } on PlatformException catch (error) {
+      if (!quiet) {
+        _message = error.message ?? '定位失敗：${error.code}';
+        if (error.details is Map) {
+          final details = Map<String, Object?>.from(error.details as Map);
+          final missing = details['missing'];
+          if (missing is List && missing.isNotEmpty) {
+            _message = '缺少定位權限：${missing.join(', ')}。請按「定位」並允許位置權限。';
+          }
+        }
+      }
+    } on MissingPluginException {
+      if (!quiet) {
+        _message = '目前平台未提供手機定位。';
+      }
+    } finally {
+      if (!quiet) {
+        _busy = false;
+      }
+      if (!quiet || changed) {
+        notifyListeners();
+      }
+    }
+    return null;
+  }
+}
+
+class DeviceLocation {
+  const DeviceLocation({
+    required this.latitude,
+    required this.longitude,
+    required this.accuracyMeters,
+    required this.provider,
+    required this.timestamp,
+    required this.fromCache,
+  });
+
+  factory DeviceLocation.fromMap(Map<String, Object?> map) {
+    return DeviceLocation(
+      latitude: _doubleValue(map['latitude']),
+      longitude: _doubleValue(map['longitude']),
+      accuracyMeters: max(0, _doubleValue(map['accuracyMeters'])),
+      provider: _stringValue(map['provider'], fallback: 'unknown'),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        _intValue(map['timestampMillis']),
+      ),
+      fromCache: map['fromCache'] == true,
+    );
+  }
+
+  final double latitude;
+  final double longitude;
+  final double accuracyMeters;
+  final String provider;
+  final DateTime timestamp;
+  final bool fromCache;
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'latitude': latitude,
+      'longitude': longitude,
+      'accuracyMeters': accuracyMeters,
+      'provider': provider,
+      'timestampMillis': timestamp.millisecondsSinceEpoch,
+      'fromCache': fromCache,
+    };
+  }
+
+  bool get isInsideHongKong {
+    return latitude >= 22.13 &&
+        latitude <= 22.57 &&
+        longitude >= 113.82 &&
+        longitude <= 114.43;
+  }
+}
+
+class RadarContact {
+  const RadarContact({
+    required this.id,
+    required this.name,
+    this.displayName = '',
+    this.userName = '',
+    required this.location,
+    required this.isMe,
+    required this.isSosActive,
+    required this.lastSeen,
+  });
+
+  final String id;
+  final String name;
+  final String displayName;
+  final String userName;
+  final DeviceLocation location;
+  final bool isMe;
+  final bool isSosActive;
+  final DateTime lastSeen;
+
+  double distanceFrom(DeviceLocation other) {
+    return _distanceBetweenLocations(location, other);
+  }
+}
+
+bool _shouldReplaceLocation(DeviceLocation? previous, DeviceLocation next) {
+  if (previous == null) {
+    return true;
+  }
+
+  final distanceMeters = _distanceBetweenLocations(previous, next);
+  if (distanceMeters >= _radarLocationUpdateThresholdMeters) {
+    return true;
+  }
+
+  final accuracyDelta = previous.accuracyMeters - next.accuracyMeters;
+  return accuracyDelta >= _radarAccuracyUpdateThresholdMeters;
+}
+
+double _distanceBetweenLocations(DeviceLocation left, DeviceLocation right) {
+  const earthRadiusMeters = 6371000.0;
+  final dLat = _degreesToRadians(left.latitude - right.latitude);
+  final dLng = _degreesToRadians(left.longitude - right.longitude);
+  final lat1 = _degreesToRadians(right.latitude);
+  final lat2 = _degreesToRadians(left.latitude);
+  final a =
+      sin(dLat / 2) * sin(dLat / 2) +
+      cos(lat1) * cos(lat2) * sin(dLng / 2) * sin(dLng / 2);
+  final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return earthRadiusMeters * c;
+}
+
+double _degreesToRadians(double degrees) {
+  return degrees * pi / 180;
+}
+
+double _doubleValue(Object? value) {
+  if (value is double) {
+    return value;
+  }
+  if (value is int) {
+    return value.toDouble();
+  }
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value) ?? 0;
+  }
+  return 0;
+}
+
+class WifiP2pPeer {
+  const WifiP2pPeer({
+    required this.name,
+    required this.address,
+    required this.status,
+    required this.statusText,
+    required this.isGroupOwner,
+    required this.isAppPeer,
+    required this.host,
+    required this.port,
+  });
+
+  factory WifiP2pPeer.fromMap(Map<String, Object?> map) {
+    return WifiP2pPeer(
+      name: _stringValue(map['deviceName'], fallback: '未命名 P2P 裝置'),
+      address: _stringValue(map['deviceAddress']),
+      status: _intValue(map['status']),
+      statusText: _stringValue(map['statusText'], fallback: '未知'),
+      isGroupOwner: map['isGroupOwner'] == true,
+      isAppPeer: map['isAppPeer'] == true,
+      host: _stringValue(map['host']),
+      port: _intValue(map['port']),
+    );
+  }
+
+  final String name;
+  final String address;
+  final int status;
+  final String statusText;
+  final bool isGroupOwner;
+  final bool isAppPeer;
+  final String host;
+  final int port;
+
+  bool get canInvite => statusText != '不可用' && statusText != '失敗';
+  bool get hasLanEndpoint => host.isNotEmpty && port > 0;
+}
+
+class WifiNetworkInfo {
+  const WifiNetworkInfo({
+    required this.ssid,
+    required this.bssid,
+    required this.capabilities,
+    required this.frequency,
+    required this.level,
+  });
+
+  factory WifiNetworkInfo.fromMap(Map<String, Object?> map) {
+    return WifiNetworkInfo(
+      ssid: _stringValue(map['ssid']),
+      bssid: _stringValue(map['bssid']),
+      capabilities: _stringValue(map['capabilities']),
+      frequency: _intValue(map['frequency']),
+      level: _intValue(map['level']),
+    );
+  }
+
+  final String ssid;
+  final String bssid;
+  final String capabilities;
+  final int frequency;
+  final int level;
+
+  bool get isMeshNetwork {
+    final lower = ssid.toLowerCase();
+    return lower.contains('mesh') || lower.contains('aieco');
+  }
+
+  bool get secured =>
+      capabilities.contains('WEP') || capabilities.contains('WPA');
+}
+
+class WifiP2pConnection {
+  const WifiP2pConnection({
+    required this.groupFormed,
+    required this.isGroupOwner,
+    required this.groupOwnerAddress,
+  });
+
+  static WifiP2pConnection? fromMap(Map<String, Object?> map) {
+    if (map.isEmpty) {
+      return null;
+    }
+
+    return WifiP2pConnection(
+      groupFormed: map['groupFormed'] == true,
+      isGroupOwner: map['isGroupOwner'] == true,
+      groupOwnerAddress: _stringValue(map['groupOwnerAddress']),
+    );
+  }
+
+  final bool groupFormed;
+  final bool isGroupOwner;
+  final String groupOwnerAddress;
+}
+
+class WifiDirectGroup {
+  const WifiDirectGroup({
+    required this.networkName,
+    required this.passphrase,
+    required this.isGroupOwner,
+    required this.clients,
+  });
+
+  static WifiDirectGroup? fromMap(Map<String, Object?> map) {
+    if (map.isEmpty) {
+      return null;
+    }
+
+    return WifiDirectGroup(
+      networkName: _stringValue(map['networkName']),
+      passphrase: _stringValue(map['passphrase']),
+      isGroupOwner: map['isGroupOwner'] == true,
+      clients: WifiMeshController._listOfMaps(
+        map['clients'],
+      ).map(WifiP2pPeer.fromMap).toList(),
+    );
+  }
+
+  final String networkName;
+  final String passphrase;
+  final bool isGroupOwner;
+  final List<WifiP2pPeer> clients;
+}
+
+class WifiHotspotInfo {
+  const WifiHotspotInfo({required this.ssid, required this.preSharedKey});
+
+  static WifiHotspotInfo? fromMap(Map<String, Object?> map) {
+    if (map.isEmpty) {
+      return null;
+    }
+
+    return WifiHotspotInfo(
+      ssid: _cleanQuotedString(_stringValue(map['ssid'])),
+      preSharedKey: _cleanQuotedString(_stringValue(map['preSharedKey'])),
+    );
+  }
+
+  final String ssid;
+  final String preSharedKey;
+}
+
+String _stringValue(Object? value, {String fallback = ''}) {
+  if (value is String) {
+    return value;
+  }
+  return fallback;
+}
+
+int _intValue(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value) ?? 0;
+  }
+  return 0;
+}
+
+bool? _optionalBoolValue(Object? value) {
+  if (value is bool) {
+    return value;
+  }
+  if (value is String) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized == 'true') {
+      return true;
+    }
+    if (normalized == 'false') {
+      return false;
+    }
+  }
+  return null;
+}
+
+String _cleanQuotedString(String value) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.substring(1, value.length - 1);
+  }
+  return value;
+}
+
+class MeshContentModerationResult {
+  const MeshContentModerationResult._({
+    required this.allowed,
+    required this.reason,
+  });
+
+  const MeshContentModerationResult.allowed()
+    : this._(allowed: true, reason: '');
+
+  const MeshContentModerationResult.blocked(String reason)
+    : this._(allowed: false, reason: reason);
+
+  final bool allowed;
+  final String reason;
+}
+
+class MeshContentModeration {
+  static const List<String> _blockedTerms = [
+    '色情',
+    '裸照',
+    '裸聊',
+    '援交',
+    '性交易',
+    '強姦',
+    '仇恨',
+    '種族歧視',
+    '恐嚇',
+    '殺死',
+    '炸彈',
+    '恐怖襲擊',
+    '毒品',
+    '賭博',
+    '詐騙',
+    '洗錢',
+    'spam',
+    'scam',
+    'porn',
+    'nude',
+    'rape',
+    'kill you',
+    'murder',
+    'terrorist',
+    'bomb',
+    'drug deal',
+    'gambling',
+  ];
+
+  static final List<RegExp> _blockedPatterns = [
+    RegExp(r'\b(?:buy|sell)\s+(?:drugs?|weapon|gun)s?\b'),
+    RegExp(r'\b(?:onlyfans|xxx|hardcore)\b'),
+    RegExp(r'(?:去死|殺了你|打死你|炸死)'),
+  ];
+
+  static MeshContentModerationResult check(String value) {
+    final normalized = value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    if (normalized.trim().isEmpty) {
+      return const MeshContentModerationResult.allowed();
+    }
+
+    for (final term in _blockedTerms) {
+      if (normalized.contains(term)) {
+        return const MeshContentModerationResult.blocked(
+          '內容可能涉及色情、仇恨、騷擾、暴力威脅、詐騙或非法交易，已被安全過濾阻擋。',
+        );
+      }
+    }
+
+    for (final pattern in _blockedPatterns) {
+      if (pattern.hasMatch(normalized)) {
+        return const MeshContentModerationResult.blocked(
+          '內容可能涉及不良或惡意行為，已被安全過濾阻擋。',
+        );
+      }
+    }
+
+    return const MeshContentModerationResult.allowed();
+  }
+}
+
+class MeshModerationReport {
+  const MeshModerationReport({
+    required this.id,
+    required this.targetType,
+    required this.targetId,
+    required this.targetUserId,
+    required this.targetUserName,
+    required this.reason,
+    required this.detail,
+    required this.content,
+    required this.createdAt,
+  });
+
+  static MeshModerationReport? fromMap(Map<String, Object?> map) {
+    final id = MeshChatService._stringValue(map['id']);
+    final targetType = MeshChatService._stringValue(map['targetType']);
+    final targetId = MeshChatService._stringValue(map['targetId']);
+    final targetUserId = MeshChatService._stringValue(map['targetUserId']);
+    final targetUserName = MeshChatService._stringValue(map['targetUserName']);
+    final reason = MeshChatService._stringValue(map['reason']);
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    if (id == null ||
+        targetType == null ||
+        targetId == null ||
+        targetUserId == null ||
+        targetUserName == null ||
+        reason == null) {
+      return null;
+    }
+
+    return MeshModerationReport(
+      id: id,
+      targetType: targetType,
+      targetId: targetId,
+      targetUserId: targetUserId,
+      targetUserName: targetUserName,
+      reason: reason,
+      detail: MeshChatService._stringValue(map['detail']) ?? '',
+      content: MeshChatService._stringValue(map['content']) ?? '',
+      createdAt: createdAt,
+    );
+  }
+
+  final String id;
+  final String targetType;
+  final String targetId;
+  final String targetUserId;
+  final String targetUserName;
+  final String reason;
+  final String detail;
+  final String content;
+  final DateTime createdAt;
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'id': id,
+      'targetType': targetType,
+      'targetId': targetId,
+      'targetUserId': targetUserId,
+      'targetUserName': targetUserName,
+      'reason': reason,
+      'detail': detail,
+      'content': content,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+    };
+  }
+}
+
+class _PendingLanChat {
+  _PendingLanChat(this.packet, this.peer) : queuedAt = DateTime.now();
+
+  final Map<String, Object?> packet;
+  final DateTime queuedAt;
+  MeshPeer? peer;
+  bool sending = false;
+  DateTime? retryAfter;
+}
+
+class MeshChatService extends ChangeNotifier {
+  // Tests can isolate LAN traffic and simulate stalled peers.
+  MeshChatService({
+    Future<Socket> Function(String, int)? connectLanSocket,
+    InternetAddress? lanBindAddress,
+    this.enableUdpDiscovery = true,
+    String onlineRelayUrl = _onlineRelayUrl,
+    String networkDirectoryUrl = _networkDirectoryUrl,
+    this.networkConnectionCode = _networkConnectionCode,
+  }) : _connectLanSocket = connectLanSocket ?? _defaultConnectLanSocket,
+       _pairing = NetworkPairingClient(networkDirectoryUrl),
+       _relayUrl = onlineRelayUrl,
+       _lanBindAddress = lanBindAddress ?? InternetAddress.anyIPv4,
+       _nodeId = _newId('node'),
+       _displayName = _newDisplayName(),
+       _userName = _defaultUserName {
+    if (!NetworkPairingClient.codePattern.hasMatch(networkConnectionCode)) {
+      throw const FormatException('請輸入 6 位數字連接碼。');
+    }
+    _seenMessageIds.add(_nodeId);
+    networkBridge = RelayNetworkBridge(
+      localRelayUrl: _relayUrl,
+      onConnected: () {
+        _announcePresence();
+        unawaited(_syncRecentStateOnline());
+      },
+    )..addListener(_bridgeChanged);
+    _rooms[_defaultRoomId] = MeshRoom(
+      id: _defaultRoomId,
+      name: _defaultRoomName,
+      createdBy: _nodeId,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+    );
+  }
+
+  static const int tcpPort = 47888;
+  static const int discoveryPort = 47889;
+  static const String _helloKind = 'aieco.light.hello.v1';
+  static const String _byeKind = 'aieco.light.bye.v1';
+  static const String _chatKind = 'aieco.light.chat.v1';
+  static const String _chatAckKind = 'aieco.light.chat_ack.v1';
+  static const String _chatPullDoneKind = 'aieco.light.chat_pull_done.v1';
+  static const String _roomKind = 'aieco.light.room.v1';
+  static const String _locationKind = 'aieco.light.location.v1';
+  static const String _activityKind = 'aieco.light.activity.v1';
+  static const String _helpKind = 'aieco.light.help.v1';
+  static const String _supplyKind = 'aieco.light.supply.v1';
+  static const String _creditKind = 'aieco.light.credit.v1';
+  static const String _adminKind = 'aieco.light.admin.v1';
+  static const String _defaultRoomId = 'room:main';
+  static const String _defaultRoomName = '傳播頻道';
+  static const String _appName = 'AIECO.HK 傳播光';
+  static const String _nodeIdPrefsKey = 'mesh.nodeId';
+  static const String _displayNamePrefsKey = 'mesh.displayName';
+  static const String _userNamePrefsKey = 'mesh.userName';
+  static const String _eulaAcceptedPrefsKey = 'mesh.eulaAcceptedAt';
+  static const String _blockedUsersPrefsKey = 'mesh.blockedUsers';
+  static const String _blockedUserNamesPrefsKey = 'mesh.blockedUserNames';
+  static const String _hiddenMessagesPrefsKey = 'mesh.hiddenMessages';
+  static const String _moderationReportsPrefsKey = 'mesh.moderationReports';
+  static const String _activityDailyDatePrefsKey = 'mesh.activityDailyDate';
+  static const String _activityDailyCountPrefsKey = 'mesh.activityDailyCount';
+  static const String _accountDeletionLastAtPrefsKey =
+      'mesh.accountDeletionLastAt';
+  static const List<String> _accountDataPrefsKeys = <String>[
+    _nodeIdPrefsKey,
+    _displayNamePrefsKey,
+    _userNamePrefsKey,
+    _eulaAcceptedPrefsKey,
+    _blockedUsersPrefsKey,
+    _blockedUserNamesPrefsKey,
+    _hiddenMessagesPrefsKey,
+    _moderationReportsPrefsKey,
+  ];
+  static const int maxActivitiesPerDay = 3;
+  static const int _maxStoredModerationReports = 80;
+  static const Duration _accountDeletionCooldown = Duration(days: 1);
+  static const Duration _announcementInterval = Duration(seconds: 4);
+  static const Duration _cleanupInterval = Duration(seconds: 3);
+  static const Duration _onlineReconnectDelay = Duration(seconds: 5);
+  static const List<Duration> _presenceBurstDelays = <Duration>[
+    Duration.zero,
+    Duration(milliseconds: 700),
+    Duration(milliseconds: 1800),
+    Duration(milliseconds: 3500),
+  ];
+  static const Duration _helloReplyThrottle = Duration(seconds: 8);
+  static const Duration _peerTtl = Duration(seconds: 18);
+  static const Duration _chatRetryInterval = Duration(seconds: 1);
+  static const Duration _pendingChatTtl = Duration(minutes: 5);
+  static const int _maxPendingChats = 300;
+  static const int _maxConcurrentChatRetries = 8;
+  static const Duration _locationTtl = Duration(minutes: 30);
+  static const String _fallbackDistrictCode = 'HK';
+  static const String _defaultUserName = '光之子';
+  static const int _maxUserNameLength = 24;
+  static const Map<String, String> _districtCodes = <String, String>{
+    '屯門區': 'TM',
+    '元朗區': 'YL',
+    '北區': 'N',
+    '大埔區': 'TP',
+    '西貢區': 'SK',
+    '沙田區': 'ST',
+    '荃灣區': 'TW',
+    '葵青區': 'KQ',
+    '深水埗': 'SSP',
+    '黃大仙': 'WTS',
+    '九龍城': 'KLC',
+    '油尖旺': 'YTM',
+    '觀塘區': 'KT',
+    '中西區': 'CW',
+    '灣仔區': 'WC',
+    '東區': 'E',
+    '南區': 'S',
+    '離島區': 'IS',
+  };
+  static final RegExp _displayNamePattern = RegExp(r'^[A-Z]{1,3}\d{7}$');
+  static final RegExp _legacySixDigitNamePattern = RegExp(r'^\d{6}$');
+  static final Random _random = Random.secure();
+
+  String _nodeId;
+  final String _relayUrl;
+  final NetworkPairingClient _pairing;
+  final String networkConnectionCode;
+  int _bridgeJoinGeneration = 0;
+  late final RelayNetworkBridge networkBridge;
+  final Future<Socket> Function(String, int) _connectLanSocket;
+  final InternetAddress _lanBindAddress;
+  final bool enableUdpDiscovery;
+  final Map<String, MeshPeer> _peers = <String, MeshPeer>{};
+  final Map<String, RadarContact> _peerLocations = <String, RadarContact>{};
+  final Map<String, MeshRadarActivity> _activities =
+      <String, MeshRadarActivity>{};
+  final Map<String, MeshRoom> _rooms = <String, MeshRoom>{};
+  final Map<String, MeshHelpRequest> _helpRequests =
+      <String, MeshHelpRequest>{};
+  final Map<String, MeshSupply> _supplies = <String, MeshSupply>{};
+  final Map<String, MeshCreditVote> _creditVotes = <String, MeshCreditVote>{};
+  final List<MeshMessage> _messages = <MeshMessage>[];
+  final Set<String> _seenMessageIds = <String>{};
+  final Set<String> _seenRoomIds = <String>{_defaultRoomId};
+  final Map<String, DateTime> _lastSyncAt = <String, DateTime>{};
+  final Map<String, DateTime> _lastHelloReplyAt = <String, DateTime>{};
+  final Map<String, DateTime> _lastLanDiscoverySyncAt = <String, DateTime>{};
+  final Map<String, _PendingLanChat> _pendingLanChats = {};
+  final Set<String> _blockedUserIds = <String>{};
+  final Map<String, String> _blockedUserNames = <String, String>{};
+  final Set<String> _hiddenMessageIds = <String>{};
+  final List<MeshModerationReport> _moderationReports =
+      <MeshModerationReport>[];
+  final Set<String> _mutedUserIds = <String>{};
+  final Set<String> _adminDeletedMessageIds = <String>{};
+  final Set<String> _adminDeletedRoomIds = <String>{};
+  final Set<String> _adminDeletedSupplyIds = <String>{};
+  final Set<String> _adminDeletedActivityIds = <String>{};
+  final Set<String> _supersededActivityIds = <String>{};
+  final Set<String> _seenAdminActionIds = <String>{};
+
+  ServerSocket? _tcpServer;
+  RawDatagramSocket? _udpSocket;
+  WebSocket? _onlineSocket;
+  Timer? _announcementTimer;
+  Timer? _cleanupTimer;
+  Timer? _onlineReconnectTimer;
+  Timer? _chatRetryTimer;
+  int _lanChatGeneration = 0;
+  Future<void>? _startFuture;
+  late MeshNetworkMode _networkMode = _relayUrl.isEmpty
+      ? MeshNetworkMode.offline
+      : MeshNetworkMode.online;
+  WifiTransportMode _offlineTransportMode = WifiTransportMode.wifi;
+  bool _offlineTransportReady = true;
+  bool _onlineConnecting = false;
+  bool _peerHeartbeatBusy = false;
+  DateTime? _lastPeerHeartbeatAt;
+  bool _rejoiningTransport = false;
+  DeviceLocation? _myLocation;
+  String _displayName;
+  String _userName;
+  String _activeRoomId = _defaultRoomId;
+  bool _isRunning = false;
+  bool _disposed = false;
+  bool _sosActive = false;
+  bool _presenceVisible = true;
+  late String _status = _relayUrl.isEmpty ? '正在準備離線 mesh 節點。' : '正在準備線上光之網絡。';
+  List<String> _localAddresses = <String>[];
+  List<String> _localBroadcastAddresses = <String>[];
+  DateTime? _eulaAcceptedAt;
+  MeshMessage? _lastIncomingMessage;
+  int _incomingMessageVersion = 0;
+  String _activityCreationDate = '';
+  int _activityCreationCount = 0;
+
+  bool get isRunning => _isRunning;
+  MeshNetworkMode get networkMode => _networkMode;
+  bool get onlineConfigured => _relayUrl.trim().isNotEmpty;
+  bool get onlineConnected =>
+      _onlineSocket != null && _onlineSocket?.readyState == WebSocket.open;
+  String get onlineRelayUrl => _relayUrl;
+
+  void _bridgeChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> connectOtherNetwork(String code) async {
+    if (_networkMode != MeshNetworkMode.online || !onlineConfigured) {
+      throw const FormatException('請先啟用已設定的線上光網。');
+    }
+    final otherCode = code.trim();
+    if (!NetworkPairingClient.codePattern.hasMatch(otherCode)) {
+      throw const FormatException('請輸入 6 位數字連接碼。');
+    }
+    if (otherCode == networkConnectionCode) {
+      throw const FormatException('這是本網絡的連接碼，請使用另一個 APP 的連接碼。');
+    }
+    final generation = ++_bridgeJoinGeneration;
+    final relay = await _pairing.resolve(otherCode);
+    if (_disposed ||
+        generation != _bridgeJoinGeneration ||
+        _networkMode != MeshNetworkMode.online) {
+      return;
+    }
+    await start();
+    if (_disposed ||
+        generation != _bridgeJoinGeneration ||
+        _networkMode != MeshNetworkMode.online) {
+      return;
+    }
+    if (!onlineConnected) {
+      throw const FormatException('請等待本網絡連線成功後再接入另一個 APP。');
+    }
+    await networkBridge.join(relay);
+  }
+
+  void disconnectOtherNetwork() {
+    _bridgeJoinGeneration++;
+    networkBridge.disconnect();
+  }
+
+  Future<String> getNetworkConnectionCode() async {
+    return networkConnectionCode;
+  }
+
+  String get displayName => _displayName;
+  String get userName => _userName;
+  String get identityName =>
+      _identityName(userName: _userName, displayName: _displayName);
+  String get status => _status;
+  List<String> get localAddresses => List.unmodifiable(_localAddresses);
+  DeviceLocation? get myLocation => _myLocation;
+  bool get sosActive => _sosActive;
+  bool get presenceVisible => _presenceVisible;
+  bool get eulaAccepted => _eulaAcceptedAt != null;
+  DateTime? get eulaAcceptedAt => _eulaAcceptedAt;
+  MeshMessage? get lastIncomingMessage => _lastIncomingMessage;
+  int get incomingMessageVersion => _incomingMessageVersion;
+  int get moderationReportCount => _moderationReports.length;
+  Set<String> get mutedUserIds => Set<String>.unmodifiable(_mutedUserIds);
+  bool isUserMuted(String userId) => _mutedUserIds.contains(userId);
+
+  static String adminPasswordForNow() => '${_hongKongDateKey()}1314';
+
+  static String _hongKongDateKey() => _hongKongDateKeyFor(DateTime.now());
+
+  static String _hongKongDateKeyFor(DateTime time) {
+    final hongKongTime = time.toUtc().add(const Duration(hours: 8));
+    return '${hongKongTime.year.toString().padLeft(4, '0')}'
+        '${hongKongTime.month.toString().padLeft(2, '0')}'
+        '${hongKongTime.day.toString().padLeft(2, '0')}';
+  }
+
+  static String _adminProofForDate(String date) {
+    var hash = 0x811C9DC5;
+    for (final value in utf8.encode('aieco-admin:$date:1314')) {
+      hash ^= value;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
+  Set<String> get blockedUserIds => Set<String>.unmodifiable(_blockedUserIds);
+  List<MeshBlockedUser> get blockedUsers {
+    final values =
+        _blockedUserIds.map((id) {
+          final savedName = _blockedUserNames[id]?.trim();
+          return MeshBlockedUser(
+            id: id,
+            name: savedName == null || savedName.isEmpty ? id : savedName,
+          );
+        }).toList()..sort((a, b) {
+          final nameCompare = a.name.compareTo(b.name);
+          return nameCompare == 0 ? a.id.compareTo(b.id) : nameCompare;
+        });
+    return List<MeshBlockedUser>.unmodifiable(values);
+  }
+
+  List<MeshModerationReport> get moderationReports =>
+      List<MeshModerationReport>.unmodifiable(_moderationReports);
+
+  List<RadarContact> get radarContacts {
+    final now = DateTime.now();
+    final contacts = <RadarContact>[
+      if (_myLocation != null)
+        RadarContact(
+          id: _nodeId,
+          name: identityName,
+          displayName: _displayName,
+          userName: _userName,
+          location: _myLocation!,
+          isMe: true,
+          isSosActive: _sosActive,
+          lastSeen: now,
+        ),
+      ..._peerLocations.values.where(
+        (contact) =>
+            !_blockedUserIds.contains(contact.id) &&
+            _isActivePeerLocation(contact, now),
+      ),
+    ];
+
+    contacts.sort((a, b) {
+      if (a.isMe == b.isMe) {
+        final myLocation = _myLocation;
+        if (myLocation != null) {
+          final distanceCompare = a
+              .distanceFrom(myLocation)
+              .compareTo(b.distanceFrom(myLocation));
+          if (distanceCompare != 0) {
+            return distanceCompare;
+          }
+        }
+        return a.name.compareTo(b.name);
+      }
+      return a.isMe ? -1 : 1;
+    });
+    return List<RadarContact>.unmodifiable(contacts);
+  }
+
+  List<RadarContact> radarContactsWithin(double meters) {
+    final location = _myLocation;
+    if (location == null) {
+      return const <RadarContact>[];
+    }
+
+    final now = DateTime.now();
+    final contacts =
+        _peerLocations.values
+            .where(
+              (contact) =>
+                  !_blockedUserIds.contains(contact.id) &&
+                  _isActivePeerLocation(contact, now) &&
+                  contact.distanceFrom(location) <= meters,
+            )
+            .toList()
+          ..sort(
+            (a, b) =>
+                a.distanceFrom(location).compareTo(b.distanceFrom(location)),
+          );
+    return List<RadarContact>.unmodifiable(contacts);
+  }
+
+  List<MeshRadarActivity> get radarActivities {
+    final now = DateTime.now();
+    final values =
+        _activities.values
+            .where(
+              (activity) =>
+                  !activity.isExpired(now) &&
+                  !_blockedUserIds.contains(activity.hostId),
+            )
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return List<MeshRadarActivity>.unmodifiable(values);
+  }
+
+  List<MeshRadarActivity> radarActivitiesForHost(String hostId) {
+    return List<MeshRadarActivity>.unmodifiable(
+      radarActivities.where((activity) => activity.hostId == hostId),
+    );
+  }
+
+  bool _isActivePeerLocation(RadarContact contact, DateTime now) {
+    if (now.difference(contact.lastSeen) > _locationTtl) {
+      return false;
+    }
+
+    final peer = _peers[contact.id];
+    if (peer == null) {
+      return false;
+    }
+
+    return now.difference(peer.lastSeen) <= _peerTtl;
+  }
+
+  List<MeshPeer> get peers {
+    final now = DateTime.now();
+    final values =
+        _peers.values
+            .where(
+              (peer) =>
+                  !_blockedUserIds.contains(peer.id) &&
+                  now.difference(peer.lastSeen) <= _peerTtl,
+            )
+            .toList()
+          ..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    return List<MeshPeer>.unmodifiable(values);
+  }
+
+  List<MeshOnlineUser> get onlineUsers {
+    final peerUsers =
+        peers
+            .map(
+              (peer) => MeshOnlineUser(
+                id: peer.id,
+                name: peer.name,
+                displayName: peer.displayName,
+                userName: peer.userName,
+                isMe: false,
+                lastSeen: peer.lastSeen,
+                creditScore: creditScoreFor(peer.id),
+                likedByMe: hasLikedUser(peer.id),
+                isSosActive: peer.sosActive,
+              ),
+            )
+            .toList()
+          // Do not sort the interactive online-user UI by lastSeen. Heartbeats
+          // update it continuously and can move another user under a pointer
+          // between press and release. A node id is stable for the identity, so it
+          // also keeps like and moderation targets in a deterministic position.
+          ..sort((a, b) {
+            final sosCompare = b.isSosActive ? (a.isSosActive ? 0 : 1) : -1;
+            if (a.isSosActive != b.isSosActive) {
+              return sosCompare;
+            }
+            return a.id.compareTo(b.id);
+          });
+    final values =
+        <MeshOnlineUser>[
+          MeshOnlineUser(
+            id: _nodeId,
+            name: identityName,
+            displayName: _displayName,
+            userName: _userName,
+            isMe: true,
+            lastSeen: DateTime.now(),
+            creditScore: creditScoreFor(_nodeId),
+            likedByMe: false,
+            isSosActive: _sosActive,
+          ),
+          ...peerUsers,
+        ]..sort((a, b) {
+          if (a.isSosActive != b.isSosActive) {
+            return a.isSosActive ? -1 : 1;
+          }
+          if (a.isMe != b.isMe) {
+            return a.isMe ? -1 : 1;
+          }
+          return a.id.compareTo(b.id);
+        });
+    return List<MeshOnlineUser>.unmodifiable(values);
+  }
+
+  List<MeshHelpRequest> get helpRequests {
+    final values =
+        _helpRequests.values
+            .where(
+              (request) =>
+                  !request.isResolved &&
+                  !_blockedUserIds.contains(request.requesterId),
+            )
+            .map((request) {
+              final currentSosActive = request.requesterId == _nodeId
+                  ? _sosActive
+                  : _peers[request.requesterId]?.sosActive ??
+                        request.isSosActive;
+              return request.withSosActive(currentSosActive);
+            })
+            .toList()
+          ..sort((a, b) {
+            if (a.isSosActive != b.isSosActive) {
+              return a.isSosActive ? -1 : 1;
+            }
+            return b.createdAt.compareTo(a.createdAt);
+          });
+    return List<MeshHelpRequest>.unmodifiable(values);
+  }
+
+  bool canMarkHelpRequestResolved(MeshHelpRequest request) {
+    return request.requesterId == _nodeId && !request.isResolved;
+  }
+
+  List<MeshSupply> get supplies {
+    final values =
+        _supplies.values
+            .where(
+              (supply) =>
+                  !supply.isTaken &&
+                  !_blockedUserIds.contains(supply.offeredById),
+            )
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return List<MeshSupply>.unmodifiable(values);
+  }
+
+  bool canMarkSupplyTaken(MeshSupply supply) {
+    return supply.offeredById == _nodeId && !supply.isTaken;
+  }
+
+  int creditScoreFor(String userId) {
+    return _creditVotes.values
+        .where((vote) => vote.targetId == userId)
+        .map((vote) => vote.voterId)
+        .toSet()
+        .length;
+  }
+
+  bool hasLikedUser(String userId) {
+    return _creditVotes.containsKey(_creditVoteKey(_nodeId, userId));
+  }
+
+  List<MeshRoom> get rooms {
+    final values = _rooms.values.toList()
+      ..sort((a, b) {
+        if (a.id == _defaultRoomId) {
+          return -1;
+        }
+        if (b.id == _defaultRoomId) {
+          return 1;
+        }
+        return a.createdAt.compareTo(b.createdAt);
+      });
+    return List<MeshRoom>.unmodifiable(values);
+  }
+
+  MeshRoom get activeRoom => _rooms[_activeRoomId] ?? _rooms[_defaultRoomId]!;
+
+  List<MeshMessage> get messages => List<MeshMessage>.unmodifiable(
+    _messages.where(
+      (message) =>
+          !_hiddenMessageIds.contains(message.id) &&
+          !_blockedUserIds.contains(message.senderId),
+    ),
+  );
+
+  List<MeshMessage> get activeRoomMessages {
+    final roomId = activeRoom.id;
+    return List<MeshMessage>.unmodifiable(
+      messages.where((message) => message.roomId == roomId),
+    );
+  }
+
+  Future<void> loadSavedDisplayName() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedNodeId = prefs.getString(_nodeIdPrefsKey);
+      final savedName = prefs.getString(_displayNamePrefsKey);
+      final savedUserName = prefs.getString(_userNamePrefsKey);
+      final nextNodeId = _isNodeId(savedNodeId) ? savedNodeId! : _nodeId;
+      final nextName = _isSixDigitDisplayName(savedName)
+          ? savedName!
+          : _displayName;
+      final nextUserName = _savedUserNameOrDefault(savedUserName);
+
+      if (savedNodeId != nextNodeId) {
+        await prefs.setString(_nodeIdPrefsKey, nextNodeId);
+      }
+
+      if (savedName != nextName) {
+        await prefs.setString(_displayNamePrefsKey, nextName);
+      }
+
+      if (savedUserName != nextUserName) {
+        await prefs.setString(_userNamePrefsKey, nextUserName);
+      }
+
+      if (_disposed) {
+        return;
+      }
+
+      final identityChanged =
+          nextNodeId != _nodeId ||
+          nextName != _displayName ||
+          nextUserName != _userName;
+      if (!identityChanged) {
+        return;
+      }
+
+      final previousNodeId = _nodeId;
+      _nodeId = nextNodeId;
+      _displayName = nextName;
+      _userName = nextUserName;
+      if (previousNodeId != _nodeId) {
+        _seenMessageIds.remove(previousNodeId);
+        _seenMessageIds.add(_nodeId);
+        _rooms[_defaultRoomId] = MeshRoom(
+          id: _defaultRoomId,
+          name: _defaultRoomName,
+          createdBy: _nodeId,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        );
+      }
+      notifyListeners();
+      _announcePresence();
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> loadModerationPreferences() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final acceptedAt = DateTime.tryParse(
+        prefs.getString(_eulaAcceptedPrefsKey) ?? '',
+      );
+      final blockedUsers =
+          prefs.getStringList(_blockedUsersPrefsKey) ?? const <String>[];
+      final blockedUserNames = _decodeStringMap(
+        prefs.getString(_blockedUserNamesPrefsKey),
+      );
+      final hiddenMessages =
+          prefs.getStringList(_hiddenMessagesPrefsKey) ?? const <String>[];
+      final reportStrings =
+          prefs.getStringList(_moderationReportsPrefsKey) ?? const <String>[];
+
+      _eulaAcceptedAt = acceptedAt;
+      _blockedUserIds
+        ..clear()
+        ..addAll(
+          blockedUsers.map((id) => id.trim()).where((id) => id.isNotEmpty),
+        );
+      _blockedUserNames
+        ..clear()
+        ..addAll(blockedUserNames)
+        ..removeWhere(
+          (id, name) => !_blockedUserIds.contains(id) || name.trim().isEmpty,
+        );
+      _hiddenMessageIds
+        ..clear()
+        ..addAll(hiddenMessages.where((id) => id.startsWith('msg-')));
+      _moderationReports
+        ..clear()
+        ..addAll(
+          reportStrings
+              .map(_decodeReportString)
+              .whereType<MeshModerationReport>(),
+        );
+
+      _removeBlockedContent();
+      notifyListeners();
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> acceptEula() async {
+    _eulaAcceptedAt = DateTime.now();
+    _status = '已同意最終用戶許可協議。聊天安全過濾已啟用。';
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _eulaAcceptedPrefsKey,
+        _eulaAcceptedAt!.toUtc().toIso8601String(),
+      );
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> _saveDisplayName(String value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_displayNamePrefsKey, value);
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> _saveUserName(String value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_userNamePrefsKey, value);
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<bool> deleteLocalAccountAndData() async {
+    final now = DateTime.now();
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+      final lastDeletedAt = DateTime.tryParse(
+        prefs.getString(_accountDeletionLastAtPrefsKey) ?? '',
+      );
+      final cooldownRemaining = _accountDeletionCooldownRemaining(
+        now,
+        lastDeletedAt,
+      );
+      if (cooldownRemaining != null) {
+        _status =
+            '刪除帳號 1 天內只可使用 1 次，請於 ${_formatAccountDeletionCooldown(cooldownRemaining)} 後再試。';
+        notifyListeners();
+        return false;
+      }
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+
+    await stop();
+
+    _nodeId = _newId('node');
+    _displayName = _newDisplayName();
+    _userName = _defaultUserName;
+    _myLocation = null;
+    _sosActive = false;
+    _activeRoomId = _defaultRoomId;
+    _eulaAcceptedAt = null;
+    _localAddresses = <String>[];
+
+    _clearPeerPresence();
+    _rooms.clear();
+    _rooms[_defaultRoomId] = MeshRoom(
+      id: _defaultRoomId,
+      name: _defaultRoomName,
+      createdBy: _nodeId,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+    );
+    _supplies.clear();
+    _helpRequests.clear();
+    _activities.clear();
+    _activityCreationDate = '';
+    _activityCreationCount = 0;
+    _creditVotes.clear();
+    _messages.clear();
+    _lastIncomingMessage = null;
+    _incomingMessageVersion = 0;
+    _seenMessageIds
+      ..clear()
+      ..add(_nodeId);
+    _seenRoomIds
+      ..clear()
+      ..add(_defaultRoomId);
+    _blockedUserIds.clear();
+    _blockedUserNames.clear();
+    _hiddenMessageIds.clear();
+    _moderationReports.clear();
+
+    try {
+      prefs ??= await SharedPreferences.getInstance();
+      for (final key in _accountDataPrefsKeys) {
+        await prefs.remove(key);
+      }
+      await prefs.setString(_nodeIdPrefsKey, _nodeId);
+      await prefs.setString(_displayNamePrefsKey, _displayName);
+      await prefs.setString(_userNamePrefsKey, _userName);
+      await prefs.setString(
+        _accountDeletionLastAtPrefsKey,
+        now.toUtc().toIso8601String(),
+      );
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+
+    _status = '本機帳號與資料已刪除。已建立新的光點身份，使用光之通道前需重新同意條款。';
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> start() async {
+    if (_isRunning) {
+      return;
+    }
+
+    final inFlightStart = _startFuture;
+    if (inFlightStart != null) {
+      await inFlightStart;
+      return;
+    }
+
+    final nextStart = _startTransport();
+    _startFuture = nextStart;
+    try {
+      await nextStart;
+    } finally {
+      if (_startFuture == nextStart) {
+        _startFuture = null;
+      }
+    }
+  }
+
+  Future<void> _startTransport() async {
+    if (_networkMode == MeshNetworkMode.online) {
+      await _startOnlineTransport();
+      return;
+    }
+
+    await _startOfflineTransport();
+  }
+
+  Future<void> _startOnlineTransport() async {
+    if (!onlineConfigured) {
+      _status =
+          '線上光之網絡未設定 relay。請用 --dart-define=AIECO_ONLINE_RELAY_URL=wss://... 建置。';
+      notifyListeners();
+      return;
+    }
+
+    _localAddresses = <String>[];
+    _localBroadcastAddresses = <String>[];
+    _isRunning = true;
+    _status = '正在連接線上光之網絡。';
+    notifyListeners();
+
+    _announcementTimer = Timer.periodic(
+      _announcementInterval,
+      (_) => _announcePresence(forceHeartbeat: true),
+    );
+    _cleanupTimer = Timer.periodic(
+      _cleanupInterval,
+      (_) => _removeStalePeers(),
+    );
+    await _connectOnlineRelay();
+  }
+
+  Future<void> _startOfflineTransport() async {
+    try {
+      _localAddresses = await _loadLocalAddresses();
+      _localBroadcastAddresses = _broadcastAddressesForLocalAddresses(
+        _localAddresses,
+      );
+      _tcpServer = await ServerSocket.bind(
+        _lanBindAddress,
+        tcpPort,
+        shared: true,
+      );
+      _tcpServer?.listen(_handleIncomingSocket);
+
+      if (enableUdpDiscovery) {
+        _udpSocket = await RawDatagramSocket.bind(
+          _lanBindAddress,
+          discoveryPort,
+          reuseAddress: true,
+        );
+        _udpSocket?.broadcastEnabled = true;
+        _udpSocket?.listen(_handleDiscoveryEvent);
+      }
+
+      _isRunning = true;
+      _status = '已啟動離線節點。連到同一 WiFi / mesh LAN 後會自動尋找同伴。';
+      notifyListeners();
+
+      _announcePresenceBurst();
+      _announcementTimer = Timer.periodic(
+        _announcementInterval,
+        (_) => _announcePresence(forceHeartbeat: true),
+      );
+      _cleanupTimer = Timer.periodic(
+        _cleanupInterval,
+        (_) => _removeStalePeers(),
+      );
+    } on Object catch (error) {
+      _status = '啟動失敗：$error';
+      await stop();
+      notifyListeners();
+    }
+  }
+
+  Future<void> refreshNetworkPresence({bool forceRejoin = false}) async {
+    if (_networkMode == MeshNetworkMode.online) {
+      if (!_isRunning) {
+        await start();
+        return;
+      }
+
+      if (!onlineConfigured) {
+        _status =
+            '線上光之網絡未設定 relay。請用 --dart-define=AIECO_ONLINE_RELAY_URL=wss://... 建置。';
+      } else if (onlineConnected) {
+        _announcePresence();
+        _status = '線上光之網絡已連線，用戶入 APP 即可聊天。';
+      } else {
+        _status = '線上光之網絡正在重連。';
+        unawaited(_connectOnlineRelay());
+      }
+      notifyListeners();
+      return;
+    }
+
+    if (!_isRunning) {
+      await start();
+      return;
+    }
+
+    final nextAddresses = await _loadLocalAddresses();
+    final nextBroadcastAddresses = _broadcastAddressesForLocalAddresses(
+      nextAddresses,
+    );
+    final addressesChanged =
+        !_sameStringList(_localAddresses, nextAddresses) ||
+        !_sameStringList(_localBroadcastAddresses, nextBroadcastAddresses);
+    if (forceRejoin ||
+        addressesChanged ||
+        (enableUdpDiscovery && _udpSocket == null) ||
+        _tcpServer == null) {
+      await _rejoinTransport(nextAddresses);
+      return;
+    }
+
+    _localAddresses = nextAddresses;
+    _localBroadcastAddresses = nextBroadcastAddresses;
+    _announcePresenceBurst();
+    _status = '已連到 MESH LAN，正在自動尋找同伴。';
+    notifyListeners();
+  }
+
+  Future<void> setNetworkMode(MeshNetworkMode mode) async {
+    if (_networkMode == mode) {
+      if (mode == MeshNetworkMode.online && !onlineConfigured) {
+        _status =
+            '線上光之網絡未設定 relay。請用 --dart-define=AIECO_ONLINE_RELAY_URL=wss://... 建置。';
+        notifyListeners();
+      }
+      return;
+    }
+
+    final wasRunning = _isRunning || _startFuture != null;
+    if (_isRunning) {
+      _announceGoodbye();
+    }
+
+    _isRunning = false;
+    await _closeTransport();
+    _startFuture = null;
+    _rejoiningTransport = false;
+    _clearPeerPresence();
+    _networkMode = mode;
+    _clearPendingLanChats();
+
+    _status = switch (mode) {
+      MeshNetworkMode.online =>
+        onlineConfigured ? '已切換線上光之網絡，正在連接 relay。' : '已切換線上光之網絡，但未設定 relay。',
+      MeshNetworkMode.offline => '已切換離線 mesh，連到同一 WiFi / mesh LAN 後會自動尋找同伴。',
+    };
+    notifyListeners();
+
+    if (wasRunning && (mode != MeshNetworkMode.online || onlineConfigured)) {
+      await start();
+    }
+  }
+
+  void setPresenceVisible(bool visible) {
+    if (_presenceVisible == visible) {
+      if (visible) {
+        _removeStalePeers();
+      }
+      return;
+    }
+
+    if (!visible && _isRunning) {
+      _announceGoodbye();
+    }
+    _presenceVisible = visible;
+
+    if (visible && _isRunning) {
+      _removeStalePeers();
+      _announcePresenceBurst();
+    }
+  }
+
+  void setOfflineTransportMode(WifiTransportMode mode, {required bool ready}) {
+    if (_offlineTransportMode == mode && _offlineTransportReady == ready) {
+      return;
+    }
+
+    _offlineTransportMode = mode;
+    _offlineTransportReady = ready;
+
+    if (_networkMode != MeshNetworkMode.offline) {
+      return;
+    }
+
+    _clearPeerPresence();
+    _status = _offlineTransportStatus();
+    notifyListeners();
+
+    if (_isRunning && _offlineTransportReady) {
+      _announcePresenceBurst();
+    }
+  }
+
+  Future<void> syncDiscoveredLanPeers(Iterable<WifiP2pPeer> discovered) async {
+    if (!_isRunning ||
+        _disposed ||
+        !_presenceVisible ||
+        _networkMode != MeshNetworkMode.offline ||
+        _offlineTransportMode != WifiTransportMode.wifi ||
+        !_offlineTransportReady) {
+      return;
+    }
+
+    final now = DateTime.now();
+    _lastLanDiscoverySyncAt.removeWhere(
+      (_, attemptedAt) => now.difference(attemptedAt) >= _helloReplyThrottle,
+    );
+    final activeEndpoints = peers
+        .map((peer) => '${peer.host}:${peer.port}')
+        .toSet();
+    final connections = <Future<bool>>[];
+    for (final peer in discovered) {
+      if (!peer.isAppPeer ||
+          !peer.hasLanEndpoint ||
+          peer.port > 65535 ||
+          _localAddresses.contains(peer.host)) {
+        continue;
+      }
+      final endpoint = '${peer.host}:${peer.port}';
+      if (activeEndpoints.contains(endpoint) ||
+          _lastLanDiscoverySyncAt.containsKey(endpoint)) {
+        continue;
+      }
+      _lastLanDiscoverySyncAt[endpoint] = now;
+      // Bonjour supplies an endpoint; only the remote hello confirms presence.
+      connections.add(_sendJson(peer.host, peer.port, _helloPacket()));
+    }
+    await Future.wait(connections);
+  }
+
+  Future<void> syncLanPeer(WifiP2pPeer peer) async {
+    if (!peer.hasLanEndpoint) {
+      _status = '這個 peer 未提供 LAN 位址，不能直接同步。';
+      notifyListeners();
+      return;
+    }
+
+    await syncLanEndpoint(name: peer.name, host: peer.host, port: peer.port);
+  }
+
+  Future<void> syncLanEndpoint({
+    required String name,
+    required String host,
+    required int port,
+  }) async {
+    if (_networkMode == MeshNetworkMode.online) {
+      await setNetworkMode(MeshNetworkMode.offline);
+    }
+
+    if (host.trim().isEmpty || port <= 0) {
+      _status = '這個 peer 未提供 LAN 位址，不能直接同步。';
+      notifyListeners();
+      return;
+    }
+
+    if (!_isRunning) {
+      await start();
+    }
+    if (!_isRunning) {
+      _status = '節點尚未啟動，不能連接 LAN peer。';
+      notifyListeners();
+      return;
+    }
+
+    if (_localAddresses.contains(host)) {
+      _status = '已略過本機 LAN peer。';
+      notifyListeners();
+      return;
+    }
+
+    final helloSent = await _sendJson(host, port, _helloPacket());
+    if (!helloSent) {
+      _status = '未能連接 $name（$host:$port）。請確認對方節點已啟動。';
+      notifyListeners();
+      return;
+    }
+
+    // Keep an identity and negotiated capabilities already learned by hello.
+    // A manual LAN reconnect must not replace them with a placeholder peer.
+    if (!_peers.values.any((peer) => peer.host == host && peer.port == port)) {
+      _rememberPeer(
+        id: 'endpoint:$host:$port',
+        name: name,
+        host: host,
+        port: port,
+        notify: false,
+      );
+    }
+    await _throttledSync(host, port);
+    _status = '已連接 $name，正在透過 WiFi LAN mesh 同步。';
+    notifyListeners();
+  }
+
+  Future<void> stop() async {
+    if (_isRunning) {
+      _announceGoodbye();
+    }
+
+    _isRunning = false;
+    _clearPendingLanChats();
+    await _closeTransport();
+    _startFuture = null;
+    _rejoiningTransport = false;
+    _clearPeerPresence();
+    _status = '節點已停止。';
+    notifyListeners();
+  }
+
+  Future<void> _rejoinTransport(List<String> nextAddresses) async {
+    if (_rejoiningTransport) {
+      return;
+    }
+
+    _rejoiningTransport = true;
+    final previousPeers = _peers.values.toList();
+    try {
+      await _closeTransport();
+      _isRunning = false;
+      _startFuture = null;
+      _clearPeerPresence();
+      _localAddresses = nextAddresses;
+      _localBroadcastAddresses = _broadcastAddressesForLocalAddresses(
+        nextAddresses,
+      );
+
+      await start();
+      if (!_isRunning) {
+        return;
+      }
+
+      _status = '已自動重接光點節點，正在重新尋找同伴。';
+      _announcePresenceBurst();
+      // A returning iPhone may be on a hotspot that suppresses broadcast.
+      // Reuse known endpoints, but wait for a reply before showing them online.
+      final hello = _helloPacket();
+      await Future.wait(
+        previousPeers.map((peer) => _sendJson(peer.host, peer.port, hello)),
+      );
+      notifyListeners();
+    } finally {
+      _rejoiningTransport = false;
+    }
+  }
+
+  Future<void> _closeTransport() async {
+    disconnectOtherNetwork();
+    _announcementTimer?.cancel();
+    _cleanupTimer?.cancel();
+    _onlineReconnectTimer?.cancel();
+    _announcementTimer = null;
+    _cleanupTimer = null;
+    _onlineReconnectTimer = null;
+    _onlineConnecting = false;
+
+    final onlineSocket = _onlineSocket;
+    _onlineSocket = null;
+    await onlineSocket?.close(
+      WebSocketStatus.normalClosure,
+      'transport closed',
+    );
+
+    _udpSocket?.close();
+    _udpSocket = null;
+
+    await _tcpServer?.close();
+    _tcpServer = null;
+    _lastHelloReplyAt.clear();
+    _lastLanDiscoverySyncAt.clear();
+    _lastPeerHeartbeatAt = null;
+  }
+
+  Future<void> _connectOnlineRelay() async {
+    if (!onlineConfigured ||
+        _disposed ||
+        !_isRunning ||
+        _networkMode != MeshNetworkMode.online ||
+        _onlineConnecting ||
+        onlineConnected) {
+      return;
+    }
+
+    _onlineReconnectTimer?.cancel();
+    _onlineReconnectTimer = null;
+    _onlineConnecting = true;
+
+    try {
+      final socket = await WebSocket.connect(_relayUrl.trim());
+      if (_disposed || !_isRunning || _networkMode != MeshNetworkMode.online) {
+        _onlineConnecting = false;
+        await socket.close(WebSocketStatus.normalClosure, 'mode changed');
+        return;
+      }
+
+      _onlineSocket = socket;
+      _onlineConnecting = false;
+      socket.pingInterval = const Duration(seconds: 20);
+      _status = '已連上線上光之網絡。入 APP 即可聊天，不用接同一 WiFi。';
+      notifyListeners();
+
+      socket.listen(
+        _handleOnlineMessage,
+        onDone: () => _handleOnlineDisconnected(socket),
+        onError: (_) => _handleOnlineDisconnected(socket),
+        cancelOnError: true,
+      );
+
+      if (_presenceVisible) {
+        unawaited(_sendPacketToOnline(_helloPacket()));
+      }
+      unawaited(_syncRecentStateOnline());
+    } on Object catch (error) {
+      _onlineConnecting = false;
+      _onlineSocket = null;
+      if (_disposed || !_isRunning || _networkMode != MeshNetworkMode.online) {
+        return;
+      }
+
+      _status = '線上光之網絡未連上，稍後自動重試：$error';
+      notifyListeners();
+      _scheduleOnlineReconnect();
+    }
+  }
+
+  void _handleOnlineMessage(Object? data) {
+    String? text;
+    if (data is String) {
+      text = data;
+    } else if (data is List<int>) {
+      text = utf8.decode(data, allowMalformed: true);
+    }
+
+    if (text == null) {
+      return;
+    }
+
+    for (final line in const LineSplitter().convert(text)) {
+      _handlePacketLine(line, 'online-relay', fromOnline: true);
+    }
+  }
+
+  void _handleOnlineDisconnected(WebSocket socket) {
+    if (!identical(_onlineSocket, socket)) {
+      return;
+    }
+
+    _onlineSocket = null;
+    _onlineConnecting = false;
+    if (_disposed || !_isRunning || _networkMode != MeshNetworkMode.online) {
+      return;
+    }
+
+    _status = '線上光之網絡連線中斷，正在重連。';
+    notifyListeners();
+    _scheduleOnlineReconnect();
+  }
+
+  void _scheduleOnlineReconnect() {
+    if (!onlineConfigured ||
+        _disposed ||
+        !_isRunning ||
+        _networkMode != MeshNetworkMode.online ||
+        _onlineReconnectTimer != null) {
+      return;
+    }
+
+    _onlineReconnectTimer = Timer(_onlineReconnectDelay, () {
+      _onlineReconnectTimer = null;
+      unawaited(_connectOnlineRelay());
+    });
+  }
+
+  void _clearPeerPresence() {
+    _peers.clear();
+    _peerLocations.clear();
+    _lastSyncAt.clear();
+    _lastLanDiscoverySyncAt.clear();
+  }
+
+  void setDisplayName(String _) {
+    _status = '光點名稱已固定，不能更改。';
+    notifyListeners();
+  }
+
+  bool setUserName(String value) {
+    final clean = _cleanUserName(value);
+    if (clean.isEmpty) {
+      _status = '請先輸入用戶名稱。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(clean);
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    if (clean == _userName) {
+      _status = '用戶名稱沒有變更。';
+      notifyListeners();
+      return false;
+    }
+
+    _userName = clean;
+    _status = '用戶名稱已更新：$_userName';
+    notifyListeners();
+    unawaited(_saveUserName(_userName));
+
+    if (_isRunning) {
+      _announcePresenceBurst();
+      if (_myLocation != null) {
+        unawaited(_sendPacketToNetwork(_locationPacket()));
+      }
+    }
+    return true;
+  }
+
+  void setActiveRoom(String roomId) {
+    if (!_rooms.containsKey(roomId) || roomId == _activeRoomId) {
+      return;
+    }
+
+    _activeRoomId = roomId;
+    notifyListeners();
+  }
+
+  bool createRoom(String name) {
+    final clean = name.trim();
+    if (clean.isEmpty) {
+      _status = '請先輸入光團名稱。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(clean);
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    final room = MeshRoom(
+      id: _newId('room'),
+      name: clean,
+      createdBy: _nodeId,
+      createdAt: DateTime.now(),
+    );
+    _rememberRoom(room, activate: true);
+    _status = '已建立光團：${room.name}';
+    notifyListeners();
+
+    final packet = room.toPacket(
+      senderId: _nodeId,
+      senderName: _displayName,
+      senderUserName: _userName,
+    );
+    unawaited(_sendLocalPacket(packet));
+    return true;
+  }
+
+  bool shareSupply({
+    required String title,
+    required String quantity,
+    required String note,
+    String type = MeshSupply.shareType,
+    String exchangeFor = '',
+  }) {
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) {
+      _status = '請先輸入物資名稱。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(
+      [cleanTitle, quantity.trim(), note.trim(), exchangeFor.trim()].join(' '),
+    );
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    final now = DateTime.now();
+    final supply = MeshSupply(
+      id: _newId('supply'),
+      title: cleanTitle,
+      quantity: quantity.trim(),
+      note: note.trim(),
+      offeredById: _nodeId,
+      offeredByName: identityName,
+      createdAt: now,
+      updatedAt: now,
+      status: MeshSupply.availableStatus,
+      type: type == MeshSupply.exchangeType
+          ? MeshSupply.exchangeType
+          : MeshSupply.shareType,
+      exchangeFor: exchangeFor.trim(),
+    );
+    _rememberSupply(supply);
+    _status = supply.isExchange
+        ? '已發布交換物資：${supply.title}'
+        : '已分享物資：${supply.title}';
+    notifyListeners();
+
+    final packet = supply.toPacket(hops: 0);
+    unawaited(_sendLocalPacket(packet));
+    return true;
+  }
+
+  bool createHelpRequest({required String title, required String details}) {
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) {
+      _status = '請先輸入求助內容。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(
+      [cleanTitle, details.trim()].join(' '),
+    );
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    final now = DateTime.now();
+    final request = MeshHelpRequest(
+      id: _newId('help'),
+      title: cleanTitle,
+      details: details.trim(),
+      requesterId: _nodeId,
+      requesterName: identityName,
+      createdAt: now,
+      updatedAt: now,
+      status: MeshHelpRequest.activeStatus,
+      isSosActive: _sosActive,
+    );
+    _rememberHelpRequest(request);
+    _status = '已發布求助：${request.title}';
+    notifyListeners();
+
+    unawaited(_sendLocalPacket(request.toPacket(hops: 0)));
+    return true;
+  }
+
+  void markHelpRequestResolved(String requestId) {
+    final request = _helpRequests[requestId];
+    if (request == null) {
+      _status = '找不到這項求助。';
+      notifyListeners();
+      return;
+    }
+    if (request.requesterId != _nodeId) {
+      _status = '只有求助者可以標記為已解決。';
+      notifyListeners();
+      return;
+    }
+    if (request.isResolved) {
+      _status = '這項求助已標記為已解決。';
+      notifyListeners();
+      return;
+    }
+
+    final updated = request.markResolved(isSosActive: _sosActive);
+    _rememberHelpRequest(updated);
+    _status = '已將 ${request.title} 標記為已解決。';
+    notifyListeners();
+
+    unawaited(_sendLocalPacket(updated.toPacket(hops: 0)));
+  }
+
+  void markSupplyTaken(String supplyId) {
+    final supply = _supplies[supplyId];
+    if (supply == null) {
+      _status = '找不到這項物資。';
+      notifyListeners();
+      return;
+    }
+    if (supply.offeredById != _nodeId) {
+      _status = '只有分享物資的光點可以改為已取完。';
+      notifyListeners();
+      return;
+    }
+    if (supply.isTaken) {
+      _status = '這項物資已標記為已取完。';
+      notifyListeners();
+      return;
+    }
+
+    final updated = supply.markTaken();
+    _rememberSupply(updated);
+    _status = '已將 ${supply.title} 標記為已取完。';
+    notifyListeners();
+
+    final packet = updated.toPacket(hops: 0);
+    unawaited(_sendLocalPacket(packet));
+  }
+
+  void likeUser(String userId) {
+    if (userId == _nodeId) {
+      _status = '不能為自己加信用分。';
+      notifyListeners();
+      return;
+    }
+    if (hasLikedUser(userId)) {
+      _status = '你已經為這個光點加過信用分。';
+      notifyListeners();
+      return;
+    }
+
+    final targetName = _peers[userId]?.name ?? '光點';
+    final vote = MeshCreditVote(
+      voterId: _nodeId,
+      voterName: identityName,
+      targetId: userId,
+      targetName: targetName,
+      createdAt: DateTime.now(),
+    );
+    _rememberCreditVote(vote);
+    _status = '已為 $targetName 加 1 點光點信用。';
+    notifyListeners();
+
+    final packet = vote.toPacket(hops: 0);
+    unawaited(_sendLocalPacket(packet));
+  }
+
+  void reportMessage(
+    MeshMessage message, {
+    required String reason,
+    String detail = '',
+  }) {
+    _storeModerationReport(
+      MeshModerationReport(
+        id: _newId('report'),
+        targetType: 'message',
+        targetId: message.id,
+        targetUserId: message.senderId,
+        targetUserName: message.senderName,
+        reason: reason,
+        detail: detail.trim(),
+        content: message.text,
+        createdAt: DateTime.now(),
+      ),
+    );
+    _hideMessage(message.id, notify: false);
+    _status = '已提交舉報並從信息流隱藏該訊息。開發者會在 $_moderationResponseWindow 內處理。';
+    notifyListeners();
+  }
+
+  void reportUser({
+    required String userId,
+    required String userName,
+    required String reason,
+    String detail = '',
+  }) {
+    if (userId == _nodeId) {
+      _status = '不能舉報自己。';
+      notifyListeners();
+      return;
+    }
+
+    _storeModerationReport(
+      MeshModerationReport(
+        id: _newId('report'),
+        targetType: 'user',
+        targetId: userId,
+        targetUserId: userId,
+        targetUserName: userName,
+        reason: reason,
+        detail: detail.trim(),
+        content: '',
+        createdAt: DateTime.now(),
+      ),
+    );
+    _status = '已提交用戶舉報。開發者會在 $_moderationResponseWindow 內處理。';
+    notifyListeners();
+  }
+
+  void blockUser(String userId, {required String userName}) {
+    final cleanId = userId.trim();
+    final cleanName = userName.trim();
+    final displayName = cleanName.isEmpty ? cleanId : cleanName;
+
+    if (cleanId == _nodeId) {
+      _status = '不能封鎖自己。';
+      notifyListeners();
+      return;
+    }
+    if (cleanId.isEmpty) {
+      _status = '未能識別這個用戶。';
+      notifyListeners();
+      return;
+    }
+
+    _blockedUserIds.add(cleanId);
+    if (cleanName.isNotEmpty) {
+      _blockedUserNames[cleanId] = cleanName;
+    }
+    _removeBlockedContent();
+    _status = '已封鎖 $displayName，對方內容已從你的信息流隱藏。';
+    notifyListeners();
+    unawaited(_saveBlockedUsers());
+  }
+
+  void unblockUser(String userId, {String? userName}) {
+    final cleanId = userId.trim();
+    if (cleanId.isEmpty) {
+      _status = '未能識別這個用戶。';
+      notifyListeners();
+      return;
+    }
+
+    final savedName = _blockedUserNames[cleanId]?.trim();
+    final cleanName = userName?.trim();
+    final displayName = cleanName != null && cleanName.isNotEmpty
+        ? cleanName
+        : savedName != null && savedName.isNotEmpty
+        ? savedName
+        : cleanId;
+
+    if (!_blockedUserIds.remove(cleanId)) {
+      _status = '$displayName 未在封鎖名單。';
+      notifyListeners();
+      return;
+    }
+
+    _blockedUserNames.remove(cleanId);
+    _status = '已解鎖 $displayName，之後收到的新內容會重新顯示。';
+    notifyListeners();
+    unawaited(_saveBlockedUsers());
+  }
+
+  void deleteMessageFromFeed(String messageId) {
+    if (!_hideMessage(messageId, notify: false)) {
+      _status = '這則訊息已不在信息流。';
+      notifyListeners();
+      return;
+    }
+
+    _status = '已從本機信息流刪除該訊息。';
+    notifyListeners();
+  }
+
+  void adminDeleteMessage(String messageId) {
+    if (!_messages.any((message) => message.id == messageId)) return;
+    _applyAdminAction('deleteMessage', messageId);
+    _broadcastAdminAction('deleteMessage', messageId);
+  }
+
+  void adminDeleteRoom(String roomId) {
+    if (roomId == _defaultRoomId || !_rooms.containsKey(roomId)) return;
+    _applyAdminAction('deleteRoom', roomId);
+    _broadcastAdminAction('deleteRoom', roomId);
+  }
+
+  void adminDeleteSupply(String supplyId) {
+    if (!_supplies.containsKey(supplyId)) return;
+    _applyAdminAction('deleteSupply', supplyId);
+    _broadcastAdminAction('deleteSupply', supplyId);
+  }
+
+  void adminDeleteActivity(String activityId) {
+    if (!_activities.containsKey(activityId)) return;
+    _applyAdminAction('deleteActivity', activityId);
+    _broadcastAdminAction('deleteActivity', activityId);
+  }
+
+  void adminSetUserMuted(String userId, {required bool muted}) {
+    if (userId.isEmpty || userId == _nodeId) return;
+    final action = muted ? 'muteUser' : 'unmuteUser';
+    _applyAdminAction(action, userId);
+    _broadcastAdminAction(action, userId);
+  }
+
+  void _broadcastAdminAction(String action, String targetId) {
+    final date = _hongKongDateKey();
+    final packet = <String, Object?>{
+      'kind': _adminKind,
+      'app': _appName,
+      'actionId': _newId('admin'),
+      'action': action,
+      'targetId': targetId,
+      'adminDate': date,
+      'adminProof': _adminProofForDate(date),
+      'senderId': _nodeId,
+      'tcpPort': tcpPort,
+      'hops': 0,
+    };
+    _seenAdminActionIds.add(packet['actionId']! as String);
+    unawaited(_sendLocalPacket(packet));
+  }
+
+  bool _applyAdminAction(String action, String targetId) {
+    var changed = false;
+    switch (action) {
+      case 'deleteMessage':
+        _adminDeletedMessageIds.add(targetId);
+        final previousMessageCount = _messages.length;
+        _messages.removeWhere((message) => message.id == targetId);
+        changed = _messages.length != previousMessageCount;
+      case 'deleteRoom':
+        if (targetId == _defaultRoomId) return false;
+        _adminDeletedRoomIds.add(targetId);
+        changed = _rooms.remove(targetId) != null;
+        final previousRoomMessageCount = _messages.length;
+        _messages.removeWhere((message) => message.roomId == targetId);
+        changed = _messages.length != previousRoomMessageCount || changed;
+        if (_activeRoomId == targetId) _activeRoomId = _defaultRoomId;
+      case 'deleteSupply':
+        _adminDeletedSupplyIds.add(targetId);
+        changed = _supplies.remove(targetId) != null;
+      case 'deleteActivity':
+        _adminDeletedActivityIds.add(targetId);
+        changed = _activities.remove(targetId) != null;
+      case 'muteUser':
+        changed = _mutedUserIds.add(targetId);
+      case 'unmuteUser':
+        changed = _mutedUserIds.remove(targetId);
+      default:
+        return false;
+    }
+    if (changed) notifyListeners();
+    return changed;
+  }
+
+  void setStatus(String value) {
+    _status = value;
+    notifyListeners();
+  }
+
+  Future<int> activityCreatesRemainingToday() async {
+    await _loadActivityQuotaForToday();
+    return (maxActivitiesPerDay - _activityCreationCount).clamp(
+      0,
+      maxActivitiesPerDay,
+    );
+  }
+
+  Future<bool> createRadarActivity({
+    required String title,
+    required String details,
+    required String type,
+  }) async {
+    final location = _myLocation;
+    if (location == null) {
+      _status = '請先在光之雷達定位，才可建立活動。';
+      notifyListeners();
+      return false;
+    }
+
+    final cleanTitle = title.trim();
+    final cleanDetails = details.trim();
+    if (cleanTitle.isEmpty) {
+      _status = '請先輸入活動名稱。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(
+      [cleanTitle, cleanDetails].join(' '),
+    );
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    await _loadActivityQuotaForToday();
+    if (_activityCreationCount >= maxActivitiesPerDay) {
+      _status = '今天已建立 3 次活動，請於明天再建立。';
+      notifyListeners();
+      return false;
+    }
+
+    var now = DateTime.now();
+    for (final known in _activities.values.where(
+      (activity) => activity.hostId == _nodeId,
+    )) {
+      if (!now.isAfter(known.createdAt)) {
+        now = known.createdAt.add(const Duration(microseconds: 1));
+      }
+    }
+    final activity = MeshRadarActivity(
+      id: _newId('activity'),
+      title: cleanTitle,
+      details: cleanDetails,
+      type: MeshRadarActivity.normalizeType(type),
+      hostId: _nodeId,
+      hostName: identityName,
+      location: location,
+      createdAt: now,
+      expiresAt: now.add(MeshRadarActivity.defaultLifetime),
+    );
+    _rememberActivity(activity);
+    _activityCreationCount += 1;
+    unawaited(_saveActivityQuota());
+    _status =
+        '已建立${activity.localizedTypeLabel}活動：${activity.title}（今日尚可建立 ${maxActivitiesPerDay - _activityCreationCount} 次）';
+    notifyListeners();
+
+    unawaited(_sendLocalPacket(activity.toPacket(hops: 0)));
+    return true;
+  }
+
+  Future<void> _loadActivityQuotaForToday() async {
+    final today = _hongKongDateKey();
+    if (_activityCreationDate == today) {
+      return;
+    }
+
+    _activityCreationDate = today;
+    _activityCreationCount = 0;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getString(_activityDailyDatePrefsKey) == today) {
+        _activityCreationCount =
+            (prefs.getInt(_activityDailyCountPrefsKey) ?? 0).clamp(
+              0,
+              maxActivitiesPerDay,
+            );
+      }
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> _saveActivityQuota() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_activityDailyDatePrefsKey, _activityCreationDate);
+      await prefs.setInt(_activityDailyCountPrefsKey, _activityCreationCount);
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  void updateLocation(DeviceLocation location) {
+    if (!_shouldReplaceLocation(_myLocation, location)) {
+      return;
+    }
+
+    _myLocation = location;
+    final districtCode = _districtCodeForName(
+      _districtNameForLocation(location),
+    );
+    if (districtCode != _fallbackDistrictCode &&
+        _hasFallbackDistrictCode(_displayName)) {
+      _displayName = _replaceDisplayNameDistrictCode(
+        _displayName,
+        districtCode,
+      );
+      unawaited(_saveDisplayName(_displayName));
+    }
+    _status = '光之雷達已更新你的定位。';
+    notifyListeners();
+
+    final packet = _locationPacket();
+    unawaited(_sendLocalPacket(packet));
+    if (_networkMode == MeshNetworkMode.offline && _isRunning) {
+      _announcePresence();
+    }
+  }
+
+  void setSosActive(bool active) {
+    if (_sosActive == active) {
+      return;
+    }
+
+    _sosActive = active;
+    final updatedHelpRequests = _helpRequests.values
+        .where(
+          (request) => request.requesterId == _nodeId && !request.isResolved,
+        )
+        .map((request) => request.withSosActive(active, touchUpdatedAt: true))
+        .toList();
+    for (final request in updatedHelpRequests) {
+      _helpRequests[request.id] = request;
+      unawaited(_sendLocalPacket(request.toPacket(hops: 0)));
+    }
+    _status = active ? 'SOS 燈已啟動，正在顯示求救光點。' : 'SOS 燈已停止。';
+    notifyListeners();
+
+    final location = _myLocation;
+    if (location != null) {
+      unawaited(_sendLocalPacket(_locationPacket()));
+    } else {
+      unawaited(refreshNetworkPresence());
+    }
+    _announcePresenceBurst();
+  }
+
+  Future<bool> sendMessage(String text) async {
+    final clean = text.trim();
+    if (clean.isEmpty) {
+      return false;
+    }
+    if (_mutedUserIds.contains(_nodeId)) {
+      _status = '你已被管理員禁言，暫時不能傳送訊息。';
+      notifyListeners();
+      return false;
+    }
+
+    final moderation = MeshContentModeration.check(clean);
+    if (!moderation.allowed) {
+      _status = moderation.reason;
+      notifyListeners();
+      return false;
+    }
+
+    if (!_isRunning) {
+      await start();
+    }
+
+    final room = activeRoom;
+    final messageId = _newId('msg');
+    final sentAt = DateTime.now();
+    final message = MeshMessage(
+      id: messageId,
+      roomId: room.id,
+      roomName: room.name,
+      senderId: _nodeId,
+      senderName: identityName,
+      senderDisplayName: _displayName,
+      senderUserName: _userName,
+      text: clean,
+      sentAt: sentAt,
+      isMine: true,
+    );
+    final packet = message.toPacket();
+
+    _seenMessageIds.add(messageId);
+    _messages.add(message);
+    _trimMessages();
+    notifyListeners();
+
+    final delivered = await _sendPacketToNetwork(packet);
+    _status = _messageDeliveryStatus(delivered);
+    notifyListeners();
+    return true;
+  }
+
+  void _handleIncomingSocket(Socket socket) {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    var replyWrites = Future<void>.value();
+    socket
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          (line) => _handlePacketLine(
+            line,
+            socket.remoteAddress.address,
+            sendReply: (packet) {
+              replyWrites = replyWrites.then(
+                (_) => _writeSocketReply(socket, packet),
+              );
+            },
+          ),
+          onDone: () => unawaited(replyWrites.whenComplete(socket.destroy)),
+          onError: (_) => socket.destroy(),
+          cancelOnError: true,
+        );
+  }
+
+  Future<void> _writeSocketReply(
+    Socket socket,
+    Map<String, Object?> packet,
+  ) async {
+    try {
+      socket.writeln(jsonEncode(packet));
+      await socket.flush().timeout(const Duration(seconds: 2));
+    } on Object {
+      socket.destroy();
+    }
+  }
+
+  void _handleDiscoveryEvent(RawSocketEvent event) {
+    if (event != RawSocketEvent.read) {
+      return;
+    }
+
+    while (true) {
+      final datagram = _udpSocket?.receive();
+      if (datagram == null) {
+        break;
+      }
+
+      final line = utf8.decode(datagram.data, allowMalformed: true);
+      _handlePacketLine(line, datagram.address.address, discoveredByUdp: true);
+    }
+  }
+
+  void _handlePacketLine(
+    String line,
+    String remoteHost, {
+    bool discoveredByUdp = false,
+    bool fromOnline = false,
+    void Function(Map<String, Object?>)? sendReply,
+  }) {
+    final packet = _decodePacket(line);
+    if (packet == null) {
+      return;
+    }
+
+    final effectiveRemoteHost = _remoteHostForPacket(
+      packet,
+      remoteHost,
+      fromOnline,
+    );
+
+    switch (packet['kind']) {
+      case _helloKind:
+        _handleHelloPacket(
+          packet,
+          effectiveRemoteHost,
+          discoveredByUdp,
+          fromOnline: fromOnline,
+          sendReply: sendReply,
+        );
+      case _byeKind:
+        _handleByePacket(packet, effectiveRemoteHost);
+      case _roomKind:
+        _handleRoomPacket(packet, effectiveRemoteHost, fromOnline: fromOnline);
+      case _chatKind:
+        _handleChatPacket(packet, effectiveRemoteHost, fromOnline: fromOnline);
+        // Acknowledge receipt on this connection, including duplicate retries.
+        // No reverse route or later discovery cycle is needed for the reply.
+        final messageId = _stringValue(packet['messageId']);
+        if (!fromOnline &&
+            packet['chatAckRequested'] == true &&
+            messageId != null &&
+            messageId.isNotEmpty) {
+          sendReply?.call({'kind': _chatAckKind, 'messageId': messageId});
+        }
+      case _locationKind:
+        _handleLocationPacket(
+          packet,
+          effectiveRemoteHost,
+          fromOnline: fromOnline,
+        );
+      case _activityKind:
+        _handleActivityPacket(
+          packet,
+          effectiveRemoteHost,
+          fromOnline: fromOnline,
+        );
+      case _helpKind:
+        _handleHelpPacket(packet, effectiveRemoteHost, fromOnline: fromOnline);
+      case _supplyKind:
+        _handleSupplyPacket(
+          packet,
+          effectiveRemoteHost,
+          fromOnline: fromOnline,
+        );
+      case _creditKind:
+        _handleCreditPacket(
+          packet,
+          effectiveRemoteHost,
+          fromOnline: fromOnline,
+        );
+      case _adminKind:
+        _handleAdminPacket(packet, effectiveRemoteHost, fromOnline: fromOnline);
+    }
+  }
+
+  void _handleAdminPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final actionId = _stringValue(packet['actionId']);
+    final action = _stringValue(packet['action']);
+    final targetId = _stringValue(packet['targetId']);
+    final date = _stringValue(packet['adminDate']);
+    final proof = _stringValue(packet['adminProof']);
+    if (actionId == null ||
+        action == null ||
+        targetId == null ||
+        date != _hongKongDateKey() ||
+        proof != _adminProofForDate(date!) ||
+        !_seenAdminActionIds.add(actionId)) {
+      return;
+    }
+
+    _applyAdminAction(action, targetId);
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) return;
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  String _remoteHostForPacket(
+    Map<String, dynamic> packet,
+    String remoteHost,
+    bool fromOnline,
+  ) {
+    if (!fromOnline) {
+      return remoteHost;
+    }
+
+    final peerId =
+        _stringValue(packet['nodeId']) ??
+        _stringValue(packet['senderId']) ??
+        _stringValue(packet['hostId']) ??
+        _stringValue(packet['requesterId']) ??
+        _stringValue(packet['offeredById']) ??
+        _stringValue(packet['voterId']);
+    return peerId == null ? 'online-relay' : 'online:$peerId';
+  }
+
+  void _handleByePacket(Map<String, dynamic> packet, String remoteHost) {
+    final peerId = _stringValue(packet['nodeId']);
+    if (peerId == null || peerId == _nodeId) {
+      return;
+    }
+
+    final peerPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    final peerDisplayName = _stringValue(packet['name']) ?? '光點';
+    final peerName = _identityName(
+      userName: _packetUserName(packet),
+      displayName: peerDisplayName,
+    );
+    var removed = false;
+    _peers.removeWhere((id, peer) {
+      final shouldRemove =
+          id == peerId || (peer.host == remoteHost && peer.port == peerPort);
+      removed = removed || shouldRemove;
+      if (shouldRemove) {
+        _peerLocations.remove(id);
+      }
+      return shouldRemove;
+    });
+    _lastSyncAt.remove('$remoteHost:$peerPort');
+
+    if (!removed) {
+      return;
+    }
+
+    _status = '$peerName 已下線。';
+    notifyListeners();
+  }
+
+  void _handleHelloPacket(
+    Map<String, dynamic> packet,
+    String remoteHost,
+    bool discoveredByUdp, {
+    bool fromOnline = false,
+    void Function(Map<String, Object?>)? sendReply,
+  }) {
+    final peerId = _stringValue(packet['nodeId']);
+    if (peerId == null || peerId == _nodeId) {
+      return;
+    }
+    if (_blockedUserIds.contains(peerId)) {
+      _removePeerById(peerId);
+      return;
+    }
+
+    final peerDisplayName = _stringValue(packet['name']) ?? '未命名節點';
+    final peerUserName = _packetUserName(packet);
+    final peerName = _identityName(
+      userName: peerUserName,
+      displayName: peerDisplayName,
+    );
+    final peerPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    final sosActive = _optionalBoolValue(packet['sosActive']);
+    _rememberPeer(
+      id: peerId,
+      name: peerName,
+      displayName: peerDisplayName,
+      userName: peerUserName,
+      host: remoteHost,
+      port: peerPort,
+      sosActive: sosActive,
+      supportsChatAck: packet['chatAck'] == true,
+      supportsChatPull: packet['chatPull'] == true,
+    );
+    if (!fromOnline) {
+      _retryPendingLanChats(activePeer: _peers[peerId]);
+    }
+    _rememberRoomsFromList(packet['rooms']);
+    _rememberActivitiesFromList(packet['activities']);
+    _rememberHelpRequestsFromList(packet['helpRequests']);
+    _rememberSuppliesFromList(packet['supplies']);
+    _rememberCreditVotesFromList(packet['creditVotes']);
+    _rememberLocationFromMap(
+      id: peerId,
+      name: peerName,
+      displayName: peerDisplayName,
+      userName: peerUserName,
+      value: packet['location'],
+      isSosActive: sosActive,
+    );
+
+    final pullRequestId = _stringValue(packet['chatPullRequestId']);
+    if (!fromOnline &&
+        _presenceVisible &&
+        pullRequestId != null &&
+        sendReply != null) {
+      // Reply on the socket opened by the receiver. An offline hotspot may
+      // allow that connection while a new connection back to iOS fails.
+      final knownMessageIds = packet['knownMessageIds'];
+      final knownIds = knownMessageIds is List
+          ? knownMessageIds.whereType<String>().take(300).toSet()
+          : <String>{};
+      sendReply(_helloPacket(reply: true, heartbeat: true));
+      for (final message in messages) {
+        if (!knownIds.contains(message.id) &&
+            !_adminDeletedRoomIds.contains(message.roomId)) {
+          sendReply(message.toPacket(hops: 1));
+        }
+      }
+      sendReply({'kind': _chatPullDoneKind, 'requestId': pullRequestId});
+      return;
+    }
+
+    if (!fromOnline && packet['helloReply'] != true) {
+      unawaited(
+        _sendHelloReply(
+          peerId,
+          remoteHost,
+          peerPort,
+          heartbeat: packet['heartbeat'] == true,
+        ),
+      );
+    }
+
+    // A keepalive confirms presence without retransmitting all recent state.
+    if (!fromOnline && packet['heartbeat'] == true) {
+      return;
+    }
+
+    if (fromOnline) {
+      unawaited(_throttledOnlineSync(peerId));
+    } else {
+      unawaited(_throttledSync(remoteHost, peerPort));
+    }
+  }
+
+  void _handleRoomPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final room = MeshRoom.fromMap(packet);
+    if (room == null) {
+      return;
+    }
+    if (_adminDeletedRoomIds.contains(room.id)) return;
+
+    final senderId = _stringValue(packet['senderId']);
+    if (senderId == _nodeId) {
+      return;
+    }
+    if (senderId != null && _blockedUserIds.contains(senderId)) {
+      return;
+    }
+    if (_blockedUserIds.contains(room.createdBy)) {
+      return;
+    }
+    if (!MeshContentModeration.check(room.name).allowed) {
+      return;
+    }
+
+    final senderDisplayName = _stringValue(packet['senderName']);
+    final senderUserName = _packetUserName(packet);
+    final senderName = senderDisplayName == null
+        ? null
+        : _identityName(
+            userName: senderUserName,
+            displayName: senderDisplayName,
+          );
+    final senderPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    if (senderId != null && senderName != null) {
+      _rememberPeer(
+        id: senderId,
+        name: senderName,
+        displayName: senderDisplayName,
+        userName: senderUserName,
+        host: remoteHost,
+        port: senderPort,
+        sosActive: _optionalBoolValue(packet['sosActive']),
+      );
+    }
+
+    final firstSeen = !_seenRoomIds.contains(room.id);
+    _rememberRoom(room);
+    if (!firstSeen) {
+      return;
+    }
+
+    _status = '收到新光團：${room.name}';
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  void _handleChatPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final messageId = _stringValue(packet['messageId']);
+    final senderId = _stringValue(packet['senderId']);
+    final text = _stringValue(packet['text']);
+    if (messageId == null ||
+        senderId == null ||
+        senderId == _nodeId ||
+        text == null ||
+        text.trim().isEmpty) {
+      return;
+    }
+    if (_adminDeletedMessageIds.contains(messageId) ||
+        _mutedUserIds.contains(senderId)) {
+      _seenMessageIds.add(messageId);
+      return;
+    }
+    if (_blockedUserIds.contains(senderId) ||
+        _hiddenMessageIds.contains(messageId)) {
+      _seenMessageIds.add(messageId);
+      return;
+    }
+    if (!MeshContentModeration.check(text).allowed) {
+      _seenMessageIds.add(messageId);
+      return;
+    }
+
+    final senderDisplayName = _stringValue(packet['senderName']) ?? '未知光點';
+    final senderUserName = _packetUserName(packet);
+    final senderName = _identityName(
+      userName: senderUserName,
+      displayName: senderDisplayName,
+    );
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops == 0) {
+      // A history/mesh relay's socket is not the original author's endpoint.
+      final peerPort = _intValue(packet['tcpPort']) ?? tcpPort;
+      _rememberPeer(
+        id: senderId,
+        name: senderName,
+        displayName: senderDisplayName,
+        userName: senderUserName,
+        host: remoteHost,
+        port: peerPort,
+        sosActive: _optionalBoolValue(packet['sosActive']),
+      );
+    }
+
+    if (!_seenMessageIds.add(messageId)) {
+      return;
+    }
+
+    final sentAt =
+        DateTime.tryParse(_stringValue(packet['sentAt']) ?? '') ??
+        DateTime.now();
+    final roomId = _stringValue(packet['roomId']) ?? _defaultRoomId;
+    final roomName = _stringValue(packet['roomName']) ?? _defaultRoomName;
+    _rememberRoom(
+      MeshRoom(
+        id: roomId,
+        name: roomName,
+        createdBy: senderId,
+        createdAt: sentAt,
+      ),
+    );
+
+    final message = MeshMessage(
+      id: messageId,
+      roomId: roomId,
+      roomName: roomName,
+      senderId: senderId,
+      senderName: senderName,
+      senderDisplayName: senderDisplayName,
+      senderUserName: senderUserName ?? '',
+      text: text,
+      sentAt: sentAt,
+      isMine: false,
+    );
+    _messages.add(message);
+    _lastIncomingMessage = message;
+    _incomingMessageVersion += 1;
+    _trimMessages();
+    _status = '收到 $senderName 在 $roomName 的訊息，正在傳播。';
+    notifyListeners();
+
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(
+      _sendPacketToPeers(
+        forwarded,
+        exceptPeerId: senderId,
+        exceptHost: remoteHost,
+      ),
+    );
+  }
+
+  void _handleLocationPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final senderId = _stringValue(packet['senderId']);
+    final senderDisplayName = _stringValue(packet['senderName']);
+    if (senderId == null || senderId == _nodeId || senderDisplayName == null) {
+      return;
+    }
+    final senderUserName = _packetUserName(packet);
+    final senderName = _identityName(
+      userName: senderUserName,
+      displayName: senderDisplayName,
+    );
+    if (_blockedUserIds.contains(senderId)) {
+      return;
+    }
+
+    final location = DeviceLocation.fromMap(Map<String, Object?>.from(packet));
+    if (location.latitude == 0 || location.longitude == 0) {
+      return;
+    }
+
+    final peerPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    _rememberPeer(
+      id: senderId,
+      name: senderName,
+      displayName: senderDisplayName,
+      userName: senderUserName,
+      host: remoteHost,
+      port: peerPort,
+      sosActive: _optionalBoolValue(packet['sosActive']),
+      notify: false,
+    );
+    final sosActive =
+        _optionalBoolValue(packet['sosActive']) ??
+        _peers[senderId]?.sosActive ??
+        _peerLocations[senderId]?.isSosActive ??
+        false;
+    _peerLocations[senderId] = RadarContact(
+      id: senderId,
+      name: senderName,
+      displayName: senderDisplayName,
+      userName: senderUserName ?? '',
+      location: location,
+      isMe: false,
+      isSosActive: sosActive,
+      lastSeen: DateTime.now(),
+    );
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(
+      _sendPacketToPeers(
+        forwarded,
+        exceptPeerId: senderId,
+        exceptHost: remoteHost,
+      ),
+    );
+  }
+
+  void _handleActivityPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final activity = MeshRadarActivity.fromMap(
+      Map<String, Object?>.from(packet),
+    );
+    if (activity == null ||
+        _adminDeletedActivityIds.contains(activity.id) ||
+        activity.isExpired(DateTime.now()) ||
+        _blockedUserIds.contains(activity.hostId)) {
+      return;
+    }
+
+    final senderPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    if (activity.hostId != _nodeId) {
+      _rememberPeer(
+        id: activity.hostId,
+        name: activity.hostName,
+        host: remoteHost,
+        port: senderPort,
+        notify: false,
+      );
+    }
+
+    if (!_rememberActivity(activity)) {
+      return;
+    }
+
+    _status =
+        '收到 ${activity.hostName} 的${activity.localizedTypeLabel}活動：${activity.title}';
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  void _handleHelpPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final request = MeshHelpRequest.fromMap(Map<String, Object?>.from(packet));
+    if (request == null || _blockedUserIds.contains(request.requesterId)) {
+      return;
+    }
+
+    final senderPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    if (request.requesterId != _nodeId) {
+      _rememberPeer(
+        id: request.requesterId,
+        name: request.requesterName,
+        host: remoteHost,
+        port: senderPort,
+        sosActive: request.isSosActive,
+        notify: false,
+      );
+    }
+
+    final changed = _rememberHelpRequest(request);
+    if (!changed) {
+      return;
+    }
+
+    _status = request.isResolved
+        ? '${request.requesterName} 的求助已解決：${request.title}'
+        : '收到 ${request.requesterName} 的求助：${request.title}';
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  void _handleSupplyPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final supply = MeshSupply.fromMap(Map<String, Object?>.from(packet));
+    if (supply == null) {
+      return;
+    }
+    if (_adminDeletedSupplyIds.contains(supply.id)) return;
+    if (_blockedUserIds.contains(supply.offeredById) ||
+        !_supplyPassesModeration(supply)) {
+      return;
+    }
+
+    final senderPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    if (supply.offeredById != _nodeId) {
+      _rememberPeer(
+        id: supply.offeredById,
+        name: supply.offeredByName,
+        host: remoteHost,
+        port: senderPort,
+        notify: false,
+      );
+    }
+
+    final changed = _rememberSupply(supply);
+    if (!changed) {
+      return;
+    }
+
+    _status = supply.isTaken
+        ? '${supply.offeredByName} 的物資已取完：${supply.title}'
+        : supply.isExchange
+        ? '收到 ${supply.offeredByName} 的交換物資：${supply.title}'
+        : '收到 ${supply.offeredByName} 分享的物資：${supply.title}';
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  void _handleCreditPacket(
+    Map<String, dynamic> packet,
+    String remoteHost, {
+    bool fromOnline = false,
+  }) {
+    final vote = MeshCreditVote.fromMap(Map<String, Object?>.from(packet));
+    if (vote == null || vote.voterId == vote.targetId) {
+      return;
+    }
+    if (_blockedUserIds.contains(vote.voterId) ||
+        _blockedUserIds.contains(vote.targetId)) {
+      return;
+    }
+
+    final senderPort = _intValue(packet['tcpPort']) ?? tcpPort;
+    if (vote.voterId != _nodeId) {
+      _rememberPeer(
+        id: vote.voterId,
+        name: vote.voterName,
+        host: remoteHost,
+        port: senderPort,
+        notify: false,
+      );
+    }
+
+    final key = vote.key;
+    final firstSeen = !_creditVotes.containsKey(key);
+    _rememberCreditVote(vote);
+    if (!firstSeen) {
+      return;
+    }
+
+    _status = '${vote.voterName} 為 ${vote.targetName} 加了 1 點光點信用。';
+    notifyListeners();
+
+    final hops = _intValue(packet['hops']) ?? 0;
+    if (fromOnline || hops >= 8) {
+      return;
+    }
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops + 1;
+    unawaited(_sendPacketToPeers(forwarded, exceptHost: remoteHost));
+  }
+
+  void _announcePresence({bool forceHeartbeat = false}) {
+    if (!_presenceVisible) {
+      return;
+    }
+    if (_networkMode == MeshNetworkMode.online) {
+      unawaited(_sendPacketToOnline(_helloPacket()));
+      return;
+    }
+    if (!_offlineTransportReady) {
+      return;
+    }
+
+    _sendUdpDiscoveryPacket(_helloPacket());
+    unawaited(_announcePeerHeartbeats(force: forceHeartbeat));
+  }
+
+  Future<void> _announcePeerHeartbeats({bool force = false}) async {
+    if (_peerHeartbeatBusy || _peers.isEmpty) {
+      return;
+    }
+    final now = DateTime.now();
+    final lastHeartbeat = _lastPeerHeartbeatAt;
+    // Scheduled ticks must run even if timer jitter puts them just inside the
+    // burst throttle; otherwise a four-second heartbeat can slip to eight.
+    if (!force &&
+        lastHeartbeat != null &&
+        now.difference(lastHeartbeat) < _announcementInterval) {
+      return;
+    }
+
+    _lastPeerHeartbeatAt = now;
+    _peerHeartbeatBusy = true;
+    try {
+      // Hotspots can suppress UDP broadcast even while TCP remains usable.
+      // Probe known peers directly; only incoming packets refresh lastSeen.
+      final packet = _helloPacket(heartbeat: true);
+      await Future.wait(
+        _peers.values.toList().map((peer) => _sendPeerHeartbeat(peer, packet)),
+      );
+    } finally {
+      _peerHeartbeatBusy = false;
+    }
+  }
+
+  Future<bool> _sendPeerHeartbeat(MeshPeer peer, Map<String, Object?> packet) {
+    if (!peer.supportsChatPull) {
+      return _sendJson(peer.host, peer.port, packet);
+    }
+    final requestId = _newId('pull');
+    return _sendJsonBatch(peer.host, peer.port, [
+      {
+        ...packet,
+        'chatPullRequestId': requestId,
+        'knownMessageIds': _messages.map((message) => message.id).toList(),
+      },
+    ], chatPullRequestId: requestId);
+  }
+
+  void _announcePresenceBurst() {
+    for (final delay in _presenceBurstDelays) {
+      if (delay == Duration.zero) {
+        _announcePresence();
+        continue;
+      }
+
+      unawaited(
+        Future<void>.delayed(delay).then((_) {
+          if (!_disposed && _isRunning) {
+            _announcePresence();
+          }
+        }),
+      );
+    }
+  }
+
+  void _announceGoodbye() {
+    final packet = _goodbyePacket();
+    if (_networkMode == MeshNetworkMode.online) {
+      unawaited(_sendPacketToOnline(packet));
+      return;
+    }
+    if (!_offlineTransportReady) {
+      return;
+    }
+
+    final socket = _udpSocket;
+    if (socket != null) {
+      _sendUdpDiscoveryPacket(packet);
+    }
+    unawaited(_sendPacketToPeers(packet));
+  }
+
+  Map<String, Object?> _helloPacket({
+    bool reply = false,
+    bool heartbeat = false,
+  }) {
+    final location = _myLocation;
+    return <String, Object?>{
+      'kind': _helloKind,
+      'app': _appName,
+      'nodeId': _nodeId,
+      'name': _displayName,
+      'userName': _userName,
+      'tcpPort': tcpPort,
+      if (reply) 'helloReply': true,
+      'chatAck': true,
+      'chatPull': true,
+      'sosActive': _sosActive,
+      'sentAt': DateTime.now().toUtc().toIso8601String(),
+      'site': 'AIECO.HK',
+      if (heartbeat) 'heartbeat': true,
+      if (!heartbeat) ...{
+        'rooms': rooms.map((room) => room.toMap()).toList(),
+        'activities': radarActivities
+            .where(_activityPassesModeration)
+            .map((activity) => activity.toMap())
+            .toList(),
+        'helpRequests': _helpRequests.values
+            .where(
+              (request) =>
+                  !_blockedUserIds.contains(request.requesterId) &&
+                  _helpRequestPassesModeration(request),
+            )
+            .map((request) => request.toMap())
+            .toList(),
+        'supplies': _supplies.values
+            .where(
+              (supply) =>
+                  !_blockedUserIds.contains(supply.offeredById) &&
+                  _supplyPassesModeration(supply),
+            )
+            .map((supply) => supply.toMap())
+            .toList(),
+        'creditVotes': _creditVotes.values.map((vote) => vote.toMap()).toList(),
+        if (location != null) 'location': location.toMap(),
+      },
+    };
+  }
+
+  Map<String, Object?> _goodbyePacket() {
+    return <String, Object?>{
+      'kind': _byeKind,
+      'app': _appName,
+      'nodeId': _nodeId,
+      'name': _displayName,
+      'userName': _userName,
+      'tcpPort': tcpPort,
+      'sosActive': false,
+      'sentAt': DateTime.now().toUtc().toIso8601String(),
+      'site': 'AIECO.HK',
+    };
+  }
+
+  Map<String, Object?> _locationPacket({int hops = 0}) {
+    final location = _myLocation;
+    return <String, Object?>{
+      'kind': _locationKind,
+      'app': _appName,
+      'senderId': _nodeId,
+      'senderName': _displayName,
+      'senderUserName': _userName,
+      'tcpPort': tcpPort,
+      'sosActive': _sosActive,
+      'hops': hops,
+      'sentAt': DateTime.now().toUtc().toIso8601String(),
+      if (location != null) ...location.toMap(),
+    };
+  }
+
+  Future<int> _sendLocalPacket(Map<String, Object?> packet) async {
+    if (!_isRunning) {
+      await start();
+    }
+    if (!_isRunning) {
+      return 0;
+    }
+
+    return _sendPacketToNetwork(packet);
+  }
+
+  Future<int> _sendPacketToNetwork(
+    Map<String, Object?> packet, {
+    String? exceptPeerId,
+    String? exceptHost,
+  }) async {
+    if (_networkMode == MeshNetworkMode.online) {
+      return await _sendPacketToOnline(packet) ? 1 : 0;
+    }
+    if (packet['kind'] == _chatKind &&
+        packet['senderId'] == _nodeId &&
+        (!_offlineTransportReady || _peers.isEmpty)) {
+      _queuePendingLanChat(packet);
+    }
+    if (!_offlineTransportReady) {
+      return 0;
+    }
+
+    return _sendPacketToPeers(
+      packet,
+      exceptPeerId: exceptPeerId,
+      exceptHost: exceptHost,
+    );
+  }
+
+  String _messageDeliveryStatus(int delivered) {
+    if (_networkMode == MeshNetworkMode.online) {
+      if (!onlineConfigured) {
+        return '線上光之網絡未設定 relay。訊息已留在本機。';
+      }
+      return delivered == 0 ? '線上光之網絡暫未連線。訊息已留在本機，重連後會同步最近訊息。' : '訊息已送到線上光之網絡。';
+    }
+    if (!_offlineTransportReady) {
+      return _offlineTransportStatus();
+    }
+    if (delivered == 0 && _peers.isNotEmpty && _pendingLanChats.isNotEmpty) {
+      return '訊息尚未確認送達，正在自動補送。';
+    }
+
+    return delivered == 0
+        ? '未找到其他已開啟本 app 的節點。訊息已留在本機，連到同一 WiFi / mesh LAN 後會自動傳播。'
+        : '訊息已送往 $delivered 個節點，並會由節點繼續轉傳。';
+  }
+
+  String _offlineTransportStatus() {
+    if (_offlineTransportMode == WifiTransportMode.bluetooth) {
+      return _offlineTransportReady
+          ? '藍芽模式已就緒，正在尋找藍芽光點。'
+          : '藍芽模式未連上。訊息已留在本機，請先建立藍芽網絡後再刷新。';
+    }
+    return _offlineTransportReady
+        ? 'WiFi 模式已就緒，正在同一 WiFi / mesh LAN 尋找同伴。'
+        : 'WiFi 模式未連上。訊息已留在本機，請先連接同一 WiFi / 熱點。';
+  }
+
+  Future<bool> _sendPacketToOnline(Map<String, Object?> packet) async {
+    final socket = _onlineSocket;
+    if (!onlineConfigured ||
+        socket == null ||
+        socket.readyState != WebSocket.open) {
+      if (_isRunning && _networkMode == MeshNetworkMode.online) {
+        unawaited(_connectOnlineRelay());
+      }
+      return false;
+    }
+
+    try {
+      socket.add(jsonEncode(packet));
+      return true;
+    } on Object {
+      _handleOnlineDisconnected(socket);
+      return false;
+    }
+  }
+
+  Future<int> _sendPacketToPeers(
+    Map<String, Object?> packet, {
+    String? exceptPeerId,
+    String? exceptHost,
+  }) async {
+    final snapshot = _peers.values.toList();
+    final sends = <Future<bool>>[];
+    final endpoints = <String>{};
+    for (final peer in snapshot) {
+      if (peer.id == exceptPeerId ||
+          peer.host == exceptHost ||
+          _blockedUserIds.contains(peer.id)) {
+        continue;
+      }
+      if (endpoints.add('${peer.host}:${peer.port}')) {
+        // A slow/unreachable peer must not hold up delivery to other peers.
+        sends.add(_sendPeerPacket(peer, packet));
+      }
+    }
+
+    final results = await Future.wait(sends);
+    return results.where((delivered) => delivered).length;
+  }
+
+  Future<bool> _sendPeerPacket(
+    MeshPeer peer,
+    Map<String, Object?> packet,
+  ) async {
+    final generation = _lanChatGeneration;
+    final ackMessageId = packet['kind'] == _chatKind && peer.supportsChatAck
+        ? _stringValue(packet['messageId'])
+        : null;
+    if (await _sendJson(
+      peer.host,
+      peer.port,
+      packet,
+      ackMessageId: ackMessageId,
+    )) {
+      return true;
+    }
+    if (packet['kind'] != _chatKind) {
+      return false;
+    }
+
+    // Retry a transient chat failure promptly instead of waiting for the
+    // 15-second history sync. Message IDs already deduplicate any redelivery.
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    if (generation != _lanChatGeneration) return false;
+    if (_disposed ||
+        !_isRunning ||
+        _networkMode != MeshNetworkMode.offline ||
+        !_offlineTransportReady ||
+        _blockedUserIds.contains(peer.id)) {
+      _queuePendingLanChat(packet, peer: peer);
+      return false;
+    }
+    final delivered = await _sendJson(
+      peer.host,
+      peer.port,
+      packet,
+      ackMessageId: ackMessageId,
+    );
+    if (!delivered && generation == _lanChatGeneration) {
+      _queuePendingLanChat(packet, peer: peer);
+    }
+    return delivered;
+  }
+
+  void _queuePendingLanChat(Map<String, Object?> packet, {MeshPeer? peer}) {
+    if (_disposed ||
+        (!_isRunning && !_rejoiningTransport) ||
+        _networkMode != MeshNetworkMode.offline) {
+      return;
+    }
+    final messageId = _stringValue(packet['messageId']);
+    if (messageId == null) return;
+    final key = '${peer?.id ?? '*'}:$messageId';
+    _pendingLanChats.putIfAbsent(
+      key,
+      () => _PendingLanChat(Map<String, Object?>.from(packet), peer),
+    );
+    while (_pendingLanChats.length > _maxPendingChats) {
+      _pendingLanChats.remove(_pendingLanChats.keys.first);
+    }
+    _schedulePendingChatRetry();
+  }
+
+  void _schedulePendingChatRetry() {
+    if (_chatRetryTimer != null || _pendingLanChats.isEmpty || _disposed) {
+      return;
+    }
+    _chatRetryTimer = Timer(_chatRetryInterval, () {
+      _chatRetryTimer = null;
+      _retryPendingLanChats();
+      _schedulePendingChatRetry();
+    });
+  }
+
+  void _retryPendingLanChats({MeshPeer? activePeer}) {
+    final now = DateTime.now();
+    _pendingLanChats.removeWhere((_, pending) {
+      final packet = pending.packet;
+      return now.difference(pending.queuedAt) > _pendingChatTtl ||
+          _hiddenMessageIds.contains(packet['messageId']) ||
+          _adminDeletedMessageIds.contains(packet['messageId']) ||
+          _adminDeletedRoomIds.contains(packet['roomId']) ||
+          _mutedUserIds.contains(packet['senderId']) ||
+          _blockedUserIds.contains(packet['senderId']) ||
+          _blockedUserIds.contains(pending.peer?.id);
+    });
+    if (_disposed ||
+        !_isRunning ||
+        !_presenceVisible ||
+        _networkMode != MeshNetworkMode.offline ||
+        !_offlineTransportReady) {
+      return;
+    }
+    var available =
+        _maxConcurrentChatRetries -
+        _pendingLanChats.values.where((pending) => pending.sending).length;
+    final peers = _peers.values
+        .where((peer) => !_blockedUserIds.contains(peer.id))
+        .toList();
+    for (final entry in _pendingLanChats.entries.toList()) {
+      if (available <= 0) break;
+      final pending = entry.value;
+      if (pending.sending) continue;
+      final previousPeer = pending.peer;
+      bool matches(MeshPeer peer) =>
+          previousPeer == null ||
+          peer.id == previousPeer.id ||
+          (peer.host == previousPeer.host && peer.port == previousPeer.port);
+      // A received hello is evidence that this endpoint is available again.
+      // It bypasses retry backoff, but never starts a second concurrent send.
+      if (activePeer != null && !matches(activePeer)) continue;
+      if (activePeer == null &&
+          pending.retryAfter != null &&
+          now.isBefore(pending.retryAfter!)) {
+        continue;
+      }
+      final peer =
+          activePeer ?? peers.where(matches).firstOrNull ?? previousPeer;
+      if (peer == null) continue;
+      pending.peer = peer;
+      pending.sending = true;
+      available--;
+      unawaited(_retryPendingLanChat(entry.key, pending, peer));
+    }
+  }
+
+  Future<void> _retryPendingLanChat(
+    String key,
+    _PendingLanChat pending,
+    MeshPeer peer,
+  ) async {
+    final delivered = await _sendJson(
+      peer.host,
+      peer.port,
+      pending.packet,
+      ackMessageId: peer.supportsChatAck
+          ? _stringValue(pending.packet['messageId'])
+          : null,
+    );
+    if (!identical(_pendingLanChats[key], pending)) return;
+    pending.sending = false;
+    // Rotate failed deliveries so an unavailable peer cannot starve the queue.
+    _pendingLanChats.remove(key);
+    if (!delivered) {
+      pending.retryAfter = DateTime.now().add(_chatRetryInterval);
+      _pendingLanChats[key] = pending;
+    } else if (!_disposed && _isRunning) {
+      _status = '訊息已補送到 ${peer.name}。';
+      notifyListeners();
+    }
+    _retryPendingLanChats();
+  }
+
+  void _clearPendingLanChats() {
+    _lanChatGeneration++;
+    _chatRetryTimer?.cancel();
+    _chatRetryTimer = null;
+    _pendingLanChats.clear();
+  }
+
+  static Future<Socket> _defaultConnectLanSocket(String host, int port) {
+    return Socket.connect(host, port, timeout: const Duration(seconds: 2));
+  }
+
+  Future<bool> _sendJson(
+    String host,
+    int port,
+    Map<String, Object?> packet, {
+    String? ackMessageId,
+  }) async {
+    return _sendJsonBatch(host, port, [packet], ackMessageId: ackMessageId);
+  }
+
+  Future<bool> _sendJsonBatch(
+    String host,
+    int port,
+    Iterable<Map<String, Object?>> packets, {
+    String? ackMessageId,
+    String? chatPullRequestId,
+  }) async {
+    Socket? socket;
+    StreamSubscription<String>? replies;
+    final generation = _lanChatGeneration;
+    try {
+      socket = await _connectLanSocket(host, port);
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      final acknowledged = Completer<bool>();
+      void finishAcknowledgement(bool received) {
+        if (!acknowledged.isCompleted) acknowledged.complete(received);
+      }
+
+      if (ackMessageId != null || chatPullRequestId != null) {
+        replies = socket
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())
+            .listen(
+              (line) {
+                final reply = _decodePacket(line);
+                if (chatPullRequestId != null) {
+                  if (reply?['kind'] == _chatPullDoneKind &&
+                      reply?['requestId'] == chatPullRequestId) {
+                    finishAcknowledgement(true);
+                  } else if (!_disposed &&
+                      _isRunning &&
+                      generation == _lanChatGeneration &&
+                      _networkMode == MeshNetworkMode.offline) {
+                    _handlePacketLine(line, host);
+                  }
+                  return;
+                }
+                if (reply?['kind'] == _chatAckKind &&
+                    reply?['messageId'] == ackMessageId) {
+                  finishAcknowledgement(true);
+                }
+              },
+              onDone: () => finishAcknowledgement(false),
+              onError: (Object _) => finishAcknowledgement(false),
+              cancelOnError: true,
+            );
+      }
+      for (final packet in packets) {
+        final wirePacket = ackMessageId == null
+            ? packet
+            : <String, Object?>{...packet, 'chatAckRequested': true};
+        socket.write('${jsonEncode(wirePacket)}\n');
+      }
+      // Bound a stalled write as well as the connection attempt.
+      await socket.flush().timeout(const Duration(seconds: 2));
+      if ((ackMessageId != null || chatPullRequestId != null) &&
+          !await acknowledged.future.timeout(
+            Duration(seconds: chatPullRequestId == null ? 1 : 3),
+            onTimeout: () => false,
+          )) {
+        socket.destroy();
+        return false;
+      }
+      await socket.close().timeout(const Duration(seconds: 2));
+      return true;
+    } on Object {
+      socket?.destroy();
+      return false;
+    } finally {
+      await replies?.cancel();
+    }
+  }
+
+  Future<void> _sendHelloReply(
+    String peerId,
+    String remoteHost,
+    int peerPort, {
+    bool heartbeat = false,
+  }) async {
+    if (!_presenceVisible) {
+      return;
+    }
+    final key = '$peerId@$remoteHost:$peerPort';
+    final previous = _lastHelloReplyAt[key];
+    if (previous != null &&
+        DateTime.now().difference(previous) < _helloReplyThrottle) {
+      return;
+    }
+
+    _lastHelloReplyAt[key] = DateTime.now();
+    await _sendJson(
+      remoteHost,
+      peerPort,
+      _helloPacket(reply: true, heartbeat: heartbeat),
+    );
+  }
+
+  void _sendUdpDiscoveryPacket(Map<String, Object?> packet) {
+    final socket = _udpSocket;
+    if (socket == null) {
+      return;
+    }
+
+    final bytes = utf8.encode('${jsonEncode(packet)}\n');
+    for (final target in _udpDiscoveryTargets()) {
+      try {
+        socket.send(bytes, target, discoveryPort);
+      } on Object {
+        // Some Android Bluetooth PAN / Wi-Fi Direct interfaces reject one of
+        // the broadcast forms; the remaining targets can still work.
+      }
+    }
+  }
+
+  List<InternetAddress> _udpDiscoveryTargets() {
+    final targets = <String>{'255.255.255.255', ..._localBroadcastAddresses};
+    return targets.map(InternetAddress.new).toList(growable: false);
+  }
+
+  Future<void> _throttledSync(String host, int port) async {
+    final key = '$host:$port';
+    final previous = _lastSyncAt[key];
+    if (previous != null &&
+        DateTime.now().difference(previous) < const Duration(seconds: 15)) {
+      return;
+    }
+
+    _lastSyncAt[key] = DateTime.now();
+    await _syncRecentState(host, port);
+  }
+
+  Future<void> _throttledOnlineSync(String peerId) async {
+    final key = 'online-sync:$peerId';
+    final previous = _lastSyncAt[key];
+    if (previous != null &&
+        DateTime.now().difference(previous) < const Duration(seconds: 15)) {
+      return;
+    }
+
+    _lastSyncAt[key] = DateTime.now();
+    await _syncRecentStateOnline();
+  }
+
+  Future<void> _syncRecentState(String host, int port) async {
+    final packets = <Map<String, Object?>>[];
+    for (final room in rooms) {
+      packets.add(
+        room.toPacket(
+          senderId: _nodeId,
+          senderName: _displayName,
+          senderUserName: _userName,
+          hops: 1,
+        ),
+      );
+    }
+
+    // Send missed chat before bulk community data, on a single connection.
+    final recent = _messages.length <= 20
+        ? _messages
+        : _messages.sublist(_messages.length - 20);
+    for (final message in recent) {
+      packets.add(message.toPacket(hops: 1));
+    }
+
+    for (final supply in _supplies.values) {
+      packets.add(supply.toPacket(hops: 1));
+    }
+
+    for (final activity in radarActivities) {
+      packets.add(activity.toPacket(hops: 1));
+    }
+
+    for (final request in _helpRequests.values) {
+      packets.add(request.toPacket(hops: 1));
+    }
+
+    for (final vote in _creditVotes.values) {
+      packets.add(vote.toPacket(hops: 1));
+    }
+
+    if (_myLocation != null) {
+      packets.add(_locationPacket(hops: 1));
+    }
+    await _sendJsonBatch(host, port, packets);
+  }
+
+  Future<void> _syncRecentStateOnline() async {
+    if (_networkMode != MeshNetworkMode.online || !onlineConnected) {
+      return;
+    }
+
+    for (final room in rooms) {
+      await _sendPacketToOnline(
+        room.toPacket(
+          senderId: _nodeId,
+          senderName: _displayName,
+          senderUserName: _userName,
+          hops: 1,
+        ),
+      );
+    }
+
+    for (final supply in _supplies.values) {
+      await _sendPacketToOnline(supply.toPacket(hops: 1));
+    }
+
+    for (final activity in radarActivities) {
+      await _sendPacketToOnline(activity.toPacket(hops: 1));
+    }
+
+    for (final request in _helpRequests.values) {
+      await _sendPacketToOnline(request.toPacket(hops: 1));
+    }
+
+    for (final vote in _creditVotes.values) {
+      await _sendPacketToOnline(vote.toPacket(hops: 1));
+    }
+
+    final recent = _messages.length <= 20
+        ? _messages
+        : _messages.sublist(_messages.length - 20);
+    for (final message in recent) {
+      await _sendPacketToOnline(message.toPacket(hops: 1));
+    }
+
+    if (_myLocation != null) {
+      await _sendPacketToOnline(_locationPacket(hops: 1));
+    }
+  }
+
+  void _rememberPeer({
+    required String id,
+    required String name,
+    String? displayName,
+    String? userName,
+    required String host,
+    required int port,
+    bool? sosActive,
+    bool? supportsChatAck,
+    bool? supportsChatPull,
+    bool notify = true,
+  }) {
+    if (id == _nodeId) {
+      return;
+    }
+    if (_blockedUserIds.contains(id)) {
+      _removePeerById(id);
+      return;
+    }
+
+    final cleanDisplayName = (displayName ?? name).trim().isEmpty
+        ? '光點'
+        : (displayName ?? name).trim();
+    final cleanUserName = _cleanOptionalUserName(userName);
+    final label = _identityName(
+      userName: cleanUserName,
+      displayName: cleanDisplayName,
+    );
+
+    if (_networkMode == MeshNetworkMode.online) {
+      if (_sameDisplayName(cleanDisplayName, _displayName)) {
+        _removePeerById(id);
+        if (notify) {
+          notifyListeners();
+        }
+        return;
+      }
+      _removeOnlinePeersWithSameName(id: id, name: cleanDisplayName);
+    } else {
+      _removePeersFromSameEndpoint(id: id, host: host, port: port);
+    }
+
+    final existing = _peers[id];
+    if (existing == null) {
+      _peers[id] = MeshPeer(
+        id: id,
+        name: label,
+        displayName: cleanDisplayName,
+        userName: cleanUserName ?? '',
+        host: host,
+        port: port,
+        sosActive: sosActive ?? false,
+        supportsChatAck: supportsChatAck ?? false,
+        supportsChatPull: supportsChatPull ?? false,
+        lastSeen: DateTime.now(),
+      );
+    } else {
+      existing
+        ..name = label
+        ..displayName = cleanDisplayName
+        ..userName = cleanUserName ?? ''
+        ..host = host
+        ..port = port
+        ..sosActive = sosActive ?? existing.sosActive
+        ..supportsChatAck = supportsChatAck ?? existing.supportsChatAck
+        ..supportsChatPull = supportsChatPull ?? existing.supportsChatPull
+        ..lastSeen = DateTime.now();
+    }
+    final existingContact = _peerLocations[id];
+    if (existingContact != null) {
+      final nextSosActive = sosActive ?? existingContact.isSosActive;
+      if (existingContact.isSosActive != nextSosActive ||
+          existingContact.name != label ||
+          existingContact.displayName != cleanDisplayName ||
+          existingContact.userName != (cleanUserName ?? '')) {
+        _peerLocations[id] = RadarContact(
+          id: existingContact.id,
+          name: label,
+          displayName: cleanDisplayName,
+          userName: cleanUserName ?? '',
+          location: existingContact.location,
+          isMe: existingContact.isMe,
+          isSosActive: nextSosActive,
+          lastSeen: existingContact.lastSeen,
+        );
+      }
+    }
+
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  void _removePeersFromSameEndpoint({
+    required String id,
+    required String host,
+    required int port,
+  }) {
+    _peers.removeWhere(
+      (peerId, peer) => peerId != id && peer.host == host && peer.port == port,
+    );
+  }
+
+  void _removeOnlinePeersWithSameName({
+    required String id,
+    required String name,
+  }) {
+    final stalePeerIds = _peers.entries
+        .where(
+          (entry) =>
+              entry.key != id &&
+              _sameDisplayName(entry.value.displayName, name),
+        )
+        .map((entry) => entry.key)
+        .toList();
+    for (final peerId in stalePeerIds) {
+      _removePeerById(peerId);
+    }
+  }
+
+  void _removePeerById(String id) {
+    final removed = _peers.remove(id);
+    _peerLocations.remove(id);
+    if (removed != null) {
+      _lastSyncAt.removeWhere((key, _) => key.contains(id));
+    }
+  }
+
+  void _rememberRoom(MeshRoom room, {bool activate = false}) {
+    if (room.id.isEmpty || room.name.trim().isEmpty) {
+      return;
+    }
+    if (_adminDeletedRoomIds.contains(room.id)) return;
+    if (_blockedUserIds.contains(room.createdBy) ||
+        !MeshContentModeration.check(room.name).allowed) {
+      return;
+    }
+
+    _seenRoomIds.add(room.id);
+    final existing = _rooms[room.id];
+    if (existing == null || room.createdAt.isBefore(existing.createdAt)) {
+      _rooms[room.id] = room;
+    }
+    if (activate) {
+      _activeRoomId = room.id;
+    }
+  }
+
+  void _rememberRoomsFromList(Object? value) {
+    if (value is! List) {
+      return;
+    }
+
+    var changed = false;
+    for (final item in value.whereType<Map>()) {
+      final room = MeshRoom.fromMap(Map<String, Object?>.from(item));
+      if (room == null || _rooms.containsKey(room.id)) {
+        continue;
+      }
+      _rememberRoom(room);
+      changed = true;
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  bool _rememberSupply(MeshSupply supply) {
+    if (_adminDeletedSupplyIds.contains(supply.id)) return false;
+    if (supply.id.isEmpty || supply.title.trim().isEmpty) {
+      return false;
+    }
+    if (_blockedUserIds.contains(supply.offeredById) ||
+        !_supplyPassesModeration(supply)) {
+      return false;
+    }
+
+    final existing = _supplies[supply.id];
+    if (existing == null || supply.updatedAt.isAfter(existing.updatedAt)) {
+      _supplies[supply.id] = supply;
+      return true;
+    }
+    return false;
+  }
+
+  bool _rememberActivity(MeshRadarActivity activity) {
+    if (_adminDeletedActivityIds.contains(activity.id) ||
+        _supersededActivityIds.contains(activity.id) ||
+        activity.id.isEmpty ||
+        activity.title.trim().isEmpty) {
+      return false;
+    }
+    if (_blockedUserIds.contains(activity.hostId) ||
+        !_activityPassesModeration(activity)) {
+      return false;
+    }
+
+    final previousHostActivities = _activities.values
+        .where(
+          (known) => known.hostId == activity.hostId && known.id != activity.id,
+        )
+        .toList();
+    for (final known in previousHostActivities) {
+      final knownIsNewer =
+          known.createdAt.isAfter(activity.createdAt) ||
+          (known.createdAt.isAtSameMomentAs(activity.createdAt) &&
+              known.id.compareTo(activity.id) > 0);
+      if (knownIsNewer) {
+        _supersededActivityIds.add(activity.id);
+        return false;
+      }
+    }
+
+    for (final previous in previousHostActivities) {
+      _activities.remove(previous.id);
+      _supersededActivityIds.add(previous.id);
+    }
+
+    final existing = _activities[activity.id];
+    if (existing == null || activity.createdAt.isAfter(existing.createdAt)) {
+      _activities[activity.id] = activity;
+      return true;
+    }
+    return false;
+  }
+
+  void _rememberActivitiesFromList(Object? value) {
+    if (value is! List) {
+      return;
+    }
+
+    var changed = false;
+    final now = DateTime.now();
+    for (final item in value.whereType<Map>()) {
+      final activity = MeshRadarActivity.fromMap(
+        Map<String, Object?>.from(item),
+      );
+      if (activity == null || activity.isExpired(now)) {
+        continue;
+      }
+      changed = _rememberActivity(activity) || changed;
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  bool _rememberHelpRequest(MeshHelpRequest request) {
+    if (request.id.isEmpty || request.title.trim().isEmpty) {
+      return false;
+    }
+    if (_blockedUserIds.contains(request.requesterId) ||
+        !_helpRequestPassesModeration(request)) {
+      return false;
+    }
+
+    final existing = _helpRequests[request.id];
+    if (existing == null || request.updatedAt.isAfter(existing.updatedAt)) {
+      _helpRequests[request.id] = request;
+      return true;
+    }
+    return false;
+  }
+
+  void _rememberHelpRequestsFromList(Object? value) {
+    if (value is! List) {
+      return;
+    }
+
+    var changed = false;
+    for (final item in value.whereType<Map>()) {
+      final request = MeshHelpRequest.fromMap(Map<String, Object?>.from(item));
+      if (request == null) {
+        continue;
+      }
+      changed = _rememberHelpRequest(request) || changed;
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  void _rememberSuppliesFromList(Object? value) {
+    if (value is! List) {
+      return;
+    }
+
+    var changed = false;
+    for (final item in value.whereType<Map>()) {
+      final supply = MeshSupply.fromMap(Map<String, Object?>.from(item));
+      if (supply == null) {
+        continue;
+      }
+      changed = _rememberSupply(supply) || changed;
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  void _rememberCreditVote(MeshCreditVote vote) {
+    if (vote.voterId.isEmpty ||
+        vote.targetId.isEmpty ||
+        vote.voterId == vote.targetId) {
+      return;
+    }
+    if (_blockedUserIds.contains(vote.voterId) ||
+        _blockedUserIds.contains(vote.targetId)) {
+      return;
+    }
+
+    _creditVotes[vote.key] = vote;
+  }
+
+  bool _supplyPassesModeration(MeshSupply supply) {
+    return MeshContentModeration.check(
+      [
+        supply.title,
+        supply.quantity,
+        supply.note,
+        supply.exchangeFor,
+      ].join(' '),
+    ).allowed;
+  }
+
+  bool _helpRequestPassesModeration(MeshHelpRequest request) {
+    return MeshContentModeration.check(
+      [request.title, request.details].join(' '),
+    ).allowed;
+  }
+
+  bool _activityPassesModeration(MeshRadarActivity activity) {
+    return MeshContentModeration.check(
+      [activity.title, activity.details].join(' '),
+    ).allowed;
+  }
+
+  void _rememberCreditVotesFromList(Object? value) {
+    if (value is! List) {
+      return;
+    }
+
+    var changed = false;
+    for (final item in value.whereType<Map>()) {
+      final vote = MeshCreditVote.fromMap(Map<String, Object?>.from(item));
+      if (vote == null || _creditVotes.containsKey(vote.key)) {
+        continue;
+      }
+      _rememberCreditVote(vote);
+      changed = true;
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  void _rememberLocationFromMap({
+    required String id,
+    required String name,
+    String? displayName,
+    String? userName,
+    required Object? value,
+    bool? isSosActive,
+  }) {
+    if (id == _nodeId || _blockedUserIds.contains(id) || value is! Map) {
+      return;
+    }
+
+    final location = DeviceLocation.fromMap(Map<String, Object?>.from(value));
+    if (location.latitude == 0 || location.longitude == 0) {
+      return;
+    }
+    final existingContact = _peerLocations[id];
+    final nextSosActive = isSosActive ?? existingContact?.isSosActive ?? false;
+    final cleanDisplayName = (displayName ?? name).trim().isEmpty
+        ? '光點'
+        : (displayName ?? name).trim();
+    final cleanUserName = _cleanOptionalUserName(userName);
+    final label = _identityName(
+      userName: cleanUserName,
+      displayName: cleanDisplayName,
+    );
+    if (existingContact != null &&
+        !_shouldReplaceLocation(existingContact.location, location) &&
+        existingContact.isSosActive == nextSosActive &&
+        existingContact.name == label &&
+        existingContact.displayName == cleanDisplayName &&
+        existingContact.userName == (cleanUserName ?? '')) {
+      return;
+    }
+
+    _peerLocations[id] = RadarContact(
+      id: id,
+      name: label,
+      displayName: cleanDisplayName,
+      userName: cleanUserName ?? '',
+      location: location,
+      isMe: false,
+      isSosActive: nextSosActive,
+      lastSeen: DateTime.now(),
+    );
+    notifyListeners();
+  }
+
+  void _removeStalePeers() {
+    final now = DateTime.now();
+    var removed = false;
+    final stalePeerIds = <String>{};
+
+    _peers.removeWhere((peerId, peer) {
+      final shouldRemove = now.difference(peer.lastSeen) > _peerTtl;
+      removed = removed || shouldRemove;
+      if (shouldRemove) {
+        stalePeerIds.add(peerId);
+      }
+      return shouldRemove;
+    });
+
+    for (final peerId in stalePeerIds) {
+      removed = _peerLocations.remove(peerId) != null || removed;
+    }
+
+    _peerLocations.removeWhere((_, contact) {
+      final shouldRemove = !_isActivePeerLocation(contact, now);
+      removed = removed || shouldRemove;
+      return shouldRemove;
+    });
+    _activities.removeWhere((_, activity) {
+      final shouldRemove = activity.isExpired(now);
+      removed = removed || shouldRemove;
+      return shouldRemove;
+    });
+    if (removed) {
+      notifyListeners();
+    }
+  }
+
+  void _removeBlockedContent() {
+    if (_blockedUserIds.isEmpty) {
+      return;
+    }
+
+    for (final userId in _blockedUserIds) {
+      _removePeerById(userId);
+    }
+    _messages.removeWhere(
+      (message) => _blockedUserIds.contains(message.senderId),
+    );
+    _supplies.removeWhere(
+      (_, supply) => _blockedUserIds.contains(supply.offeredById),
+    );
+    _activities.removeWhere(
+      (_, activity) => _blockedUserIds.contains(activity.hostId),
+    );
+    _creditVotes.removeWhere(
+      (_, vote) =>
+          _blockedUserIds.contains(vote.voterId) ||
+          _blockedUserIds.contains(vote.targetId),
+    );
+  }
+
+  bool _hideMessage(String messageId, {required bool notify}) {
+    final hadMessage = _messages.any((message) => message.id == messageId);
+    _messages.removeWhere((message) => message.id == messageId);
+    final hidden = _hiddenMessageIds.add(messageId);
+    if (!hidden && !hadMessage) {
+      return false;
+    }
+
+    _seenMessageIds.add(messageId);
+    unawaited(_saveHiddenMessages());
+    if (notify) {
+      notifyListeners();
+    }
+    return true;
+  }
+
+  void _storeModerationReport(MeshModerationReport report) {
+    _moderationReports.insert(0, report);
+    if (_moderationReports.length > _maxStoredModerationReports) {
+      _moderationReports.removeRange(
+        _maxStoredModerationReports,
+        _moderationReports.length,
+      );
+    }
+    unawaited(_saveModerationReports());
+  }
+
+  Future<void> _saveBlockedUsers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final blockedIds = _blockedUserIds.toList()..sort();
+      final blockedNames = <String, String>{
+        for (final id in blockedIds)
+          if ((_blockedUserNames[id] ?? '').trim().isNotEmpty)
+            id: _blockedUserNames[id]!.trim(),
+      };
+
+      await prefs.setStringList(_blockedUsersPrefsKey, blockedIds);
+      await prefs.setString(
+        _blockedUserNamesPrefsKey,
+        jsonEncode(blockedNames),
+      );
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> _saveHiddenMessages() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        _hiddenMessagesPrefsKey,
+        _hiddenMessageIds.toList()..sort(),
+      );
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  Future<void> _saveModerationReports() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        _moderationReportsPrefsKey,
+        _moderationReports.map((report) => jsonEncode(report.toMap())).toList(),
+      );
+    } on Object {
+      // Tests and unsupported platforms may not have the preferences plugin.
+    }
+  }
+
+  void _trimMessages() {
+    const maxMessages = 300;
+    if (_messages.length > maxMessages) {
+      _messages.removeRange(0, _messages.length - maxMessages);
+    }
+  }
+
+  Map<String, dynamic>? _decodePacket(String line) {
+    try {
+      final decoded = jsonDecode(line.trim());
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
+    } on Object {
+      return null;
+    }
+    return null;
+  }
+
+  static MeshModerationReport? _decodeReportString(String value) {
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is Map) {
+        return MeshModerationReport.fromMap(Map<String, Object?>.from(decoded));
+      }
+    } on Object {
+      return null;
+    }
+    return null;
+  }
+
+  static Map<String, String> _decodeStringMap(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return const <String, String>{};
+    }
+
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is Map) {
+        return <String, String>{
+          for (final entry in decoded.entries)
+            if (entry.key.toString().trim().isNotEmpty &&
+                entry.value.toString().trim().isNotEmpty)
+              entry.key.toString().trim(): entry.value.toString().trim(),
+        };
+      }
+    } on Object {
+      return const <String, String>{};
+    }
+    return const <String, String>{};
+  }
+
+  static Duration? _accountDeletionCooldownRemaining(
+    DateTime now,
+    DateTime? lastDeletedAt,
+  ) {
+    if (lastDeletedAt == null) {
+      return null;
+    }
+
+    final elapsed = now.difference(lastDeletedAt);
+    if (!elapsed.isNegative && elapsed >= _accountDeletionCooldown) {
+      return null;
+    }
+    if (elapsed.isNegative) {
+      return _accountDeletionCooldown;
+    }
+    return _accountDeletionCooldown - elapsed;
+  }
+
+  static String _formatAccountDeletionCooldown(Duration remaining) {
+    final totalMinutes = max(1, remaining.inMinutes);
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes.remainder(60);
+    if (hours == 0) {
+      return '$totalMinutes 分鐘';
+    }
+    if (minutes == 0) {
+      return '$hours 小時';
+    }
+    return '$hours 小時 $minutes 分鐘';
+  }
+
+  Future<List<String>> _loadLocalAddresses() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      return interfaces
+          // Cellular address changes must not restart a healthy iOS WiFi LAN.
+          .where(
+            (networkInterface) =>
+                !Platform.isIOS ||
+                _offlineTransportMode != WifiTransportMode.wifi ||
+                networkInterface.name == 'en0',
+          )
+          .expand((networkInterface) => networkInterface.addresses)
+          .map((address) => address.address)
+          .where((address) => !address.startsWith('127.'))
+          .toSet()
+          .toList()
+        ..sort();
+    } on Object {
+      return <String>[];
+    }
+  }
+
+  static List<String> _broadcastAddressesForLocalAddresses(
+    List<String> addresses,
+  ) {
+    final broadcasts = <String>{};
+    for (final address in addresses) {
+      final parts = address.split('.');
+      if (parts.length != 4) {
+        continue;
+      }
+
+      final octets = parts.map(int.tryParse).toList(growable: false);
+      if (octets.any((octet) => octet == null || octet < 0 || octet > 255)) {
+        continue;
+      }
+      if (octets.first == 0 || octets.first == 127) {
+        continue;
+      }
+
+      broadcasts.add('${octets[0]}.${octets[1]}.${octets[2]}.255');
+    }
+
+    return broadcasts.toList()..sort();
+  }
+
+  static bool _sameStringList(List<String> left, List<String> right) {
+    if (left.length != right.length) {
+      return false;
+    }
+
+    for (var index = 0; index < left.length; index += 1) {
+      if (left[index] != right[index]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static String _creditVoteKey(String voterId, String targetId) {
+    return '$voterId->$targetId';
+  }
+
+  static String? _stringValue(Object? value) {
+    if (value is String) {
+      return value;
+    }
+    return null;
+  }
+
+  static String _identityName({required String displayName, String? userName}) {
+    final cleanDisplayName = displayName.trim().isEmpty
+        ? '光點'
+        : displayName.trim();
+    final cleanUserName = _cleanOptionalUserName(userName);
+    if (cleanUserName == null || cleanUserName == cleanDisplayName) {
+      return cleanDisplayName;
+    }
+    return '$cleanUserName · $cleanDisplayName';
+  }
+
+  static String? _packetUserName(Map<String, dynamic> packet) {
+    return _cleanOptionalUserName(
+      _stringValue(packet['senderUserName']) ??
+          _stringValue(packet['userName']),
+    );
+  }
+
+  static String _savedUserNameOrDefault(String? value) {
+    final clean = _cleanOptionalUserName(value);
+    if (clean == null) {
+      return _defaultUserName;
+    }
+    return MeshContentModeration.check(clean).allowed
+        ? clean
+        : _defaultUserName;
+  }
+
+  static String _cleanUserName(String value) {
+    final clean = value.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (clean.runes.length <= _maxUserNameLength) {
+      return clean;
+    }
+    return String.fromCharCodes(clean.runes.take(_maxUserNameLength));
+  }
+
+  static String? _cleanOptionalUserName(String? value) {
+    if (value == null) {
+      return null;
+    }
+    final clean = _cleanUserName(value);
+    return clean.isEmpty ? null : clean;
+  }
+
+  static int? _intValue(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is String) {
+      return int.tryParse(value);
+    }
+    return null;
+  }
+
+  static String _newId(String prefix) {
+    final time = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final suffix = _random.nextInt(1 << 32).toRadixString(36);
+    return '$prefix-$time-$suffix';
+  }
+
+  static String _newDisplayName({String districtCode = _fallbackDistrictCode}) {
+    final cleanCode = _normalizeDistrictCode(districtCode);
+    final number = (_random.nextInt(9000000) + 1000000).toString();
+    return '$cleanCode$number';
+  }
+
+  static bool _isNodeId(String? value) {
+    return value != null &&
+        value.startsWith('node-') &&
+        value.length > 'node-'.length;
+  }
+
+  static bool _isSixDigitDisplayName(String? value) {
+    return value != null &&
+        (_displayNamePattern.hasMatch(value) ||
+            _legacySixDigitNamePattern.hasMatch(value));
+  }
+
+  static String _normalizeDistrictCode(String value) {
+    final clean = value.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '');
+    if (clean.isEmpty) {
+      return _fallbackDistrictCode;
+    }
+    return clean.length > 3 ? clean.substring(0, 3) : clean;
+  }
+
+  static String _districtCodeForName(String? districtName) {
+    if (districtName == null) {
+      return _fallbackDistrictCode;
+    }
+    return _districtCodes[districtName] ?? _fallbackDistrictCode;
+  }
+
+  static bool _hasFallbackDistrictCode(String displayName) {
+    return RegExp('^$_fallbackDistrictCode\\d{7}\$').hasMatch(displayName);
+  }
+
+  static String _replaceDisplayNameDistrictCode(
+    String displayName,
+    String districtCode,
+  ) {
+    final match = RegExp(r'^([A-Z]{1,3})(\d{7})$').firstMatch(displayName);
+    if (match == null) {
+      return displayName;
+    }
+    return '${_normalizeDistrictCode(districtCode)}${match.group(2)}';
+  }
+
+  static bool _sameDisplayName(String left, String right) {
+    return left.trim() == right.trim();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    networkBridge.removeListener(_bridgeChanged);
+    networkBridge.dispose();
+    _clearPendingLanChats();
+    if (_isRunning) {
+      _announceGoodbye();
+    }
+    _isRunning = false;
+    _announcementTimer?.cancel();
+    _cleanupTimer?.cancel();
+    _onlineReconnectTimer?.cancel();
+    _udpSocket?.close();
+    _tcpServer?.close();
+    _onlineSocket?.close(WebSocketStatus.normalClosure, 'disposed');
+    super.dispose();
+  }
+}
+
+class MeshOnlineUser {
+  const MeshOnlineUser({
+    required this.id,
+    required this.name,
+    this.displayName = '',
+    this.userName = '',
+    required this.isMe,
+    required this.lastSeen,
+    required this.creditScore,
+    required this.likedByMe,
+    required this.isSosActive,
+  });
+
+  final String id;
+  final String name;
+  final String displayName;
+  final String userName;
+  final bool isMe;
+  final DateTime lastSeen;
+  final int creditScore;
+  final bool likedByMe;
+  final bool isSosActive;
+}
+
+class MeshBlockedUser {
+  const MeshBlockedUser({required this.id, required this.name});
+
+  final String id;
+  final String name;
+}
+
+class MeshRadarActivity {
+  const MeshRadarActivity({
+    required this.id,
+    required this.title,
+    required this.details,
+    required this.type,
+    required this.hostId,
+    required this.hostName,
+    required this.location,
+    required this.createdAt,
+    required this.expiresAt,
+  });
+
+  static const String mutualAidType = 'mutualAid';
+  static const String sharingType = 'sharing';
+  static const String medicalType = 'medical';
+  static const String spiritualType = 'spiritual';
+  static const List<String> supportedTypes = <String>[
+    mutualAidType,
+    sharingType,
+    medicalType,
+    spiritualType,
+  ];
+  static const Duration defaultLifetime = Duration(hours: 24);
+
+  static String normalizeType(String value) {
+    return supportedTypes.contains(value) ? value : mutualAidType;
+  }
+
+  static MeshRadarActivity? fromMap(Map<String, Object?> map) {
+    final id = MeshChatService._stringValue(map['activityId']);
+    final title = MeshChatService._stringValue(map['title']);
+    final hostId =
+        MeshChatService._stringValue(map['hostId']) ??
+        MeshChatService._stringValue(map['senderId']);
+    final hostName =
+        MeshChatService._stringValue(map['hostName']) ??
+        MeshChatService._stringValue(map['senderName']);
+    final locationValue = map['location'];
+    if (id == null ||
+        id.isEmpty ||
+        title == null ||
+        title.trim().isEmpty ||
+        hostId == null ||
+        hostName == null ||
+        locationValue is! Map) {
+      return null;
+    }
+
+    final location = DeviceLocation.fromMap(
+      Map<String, Object?>.from(locationValue),
+    );
+    if (location.latitude == 0 || location.longitude == 0) {
+      return null;
+    }
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    final maximumExpiresAt = createdAt.add(defaultLifetime);
+    final requestedExpiresAt = DateTime.tryParse(
+      MeshChatService._stringValue(map['expiresAt']) ?? '',
+    );
+    final expiresAt =
+        requestedExpiresAt != null &&
+            requestedExpiresAt.isBefore(maximumExpiresAt)
+        ? requestedExpiresAt
+        : maximumExpiresAt;
+    return MeshRadarActivity(
+      id: id,
+      title: title,
+      details: MeshChatService._stringValue(map['details']) ?? '',
+      type: normalizeType(
+        MeshChatService._stringValue(map['type']) ?? mutualAidType,
+      ),
+      hostId: hostId,
+      hostName: hostName,
+      location: location,
+      createdAt: createdAt,
+      expiresAt: expiresAt,
+    );
+  }
+
+  final String id;
+  final String title;
+  final String details;
+  final String type;
+  final String hostId;
+  final String hostName;
+  final DeviceLocation location;
+  final DateTime createdAt;
+  final DateTime expiresAt;
+
+  String get localizedTypeLabel => switch (type) {
+    sharingType => '分享',
+    medicalType => '醫療',
+    spiritualType => '心靈',
+    _ => '互助',
+  };
+
+  bool isExpired(DateTime now) => !expiresAt.isAfter(now);
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'activityId': id,
+      'title': title,
+      'details': details,
+      'type': type,
+      'hostId': hostId,
+      'hostName': hostName,
+      'location': location.toMap(),
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      'expiresAt': expiresAt.toUtc().toIso8601String(),
+    };
+  }
+
+  Map<String, Object?> toPacket({int hops = 0}) {
+    return <String, Object?>{
+      'kind': MeshChatService._activityKind,
+      'app': MeshChatService._appName,
+      'senderId': hostId,
+      'senderName': hostName,
+      'tcpPort': MeshChatService.tcpPort,
+      'hops': hops,
+      ...toMap(),
+    };
+  }
+}
+
+class MeshHelpRequest {
+  const MeshHelpRequest({
+    required this.id,
+    required this.title,
+    required this.details,
+    required this.requesterId,
+    required this.requesterName,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.status,
+    required this.isSosActive,
+  });
+
+  static const String activeStatus = 'active';
+  static const String resolvedStatus = 'resolved';
+
+  static MeshHelpRequest? fromMap(Map<String, Object?> map) {
+    final id = MeshChatService._stringValue(map['helpId']);
+    final title = MeshChatService._stringValue(map['title']);
+    final requesterId =
+        MeshChatService._stringValue(map['requesterId']) ??
+        MeshChatService._stringValue(map['senderId']);
+    final requesterName =
+        MeshChatService._stringValue(map['requesterName']) ??
+        MeshChatService._stringValue(map['senderName']);
+    if (id == null ||
+        id.isEmpty ||
+        title == null ||
+        title.trim().isEmpty ||
+        requesterId == null ||
+        requesterName == null) {
+      return null;
+    }
+
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    final updatedAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['updatedAt']) ?? '',
+        ) ??
+        createdAt;
+    return MeshHelpRequest(
+      id: id,
+      title: title,
+      details: MeshChatService._stringValue(map['details']) ?? '',
+      requesterId: requesterId,
+      requesterName: requesterName,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      status:
+          MeshChatService._stringValue(map['status']) ??
+          (map['isResolved'] == true ? resolvedStatus : activeStatus),
+      isSosActive: map['isSosActive'] == true,
+    );
+  }
+
+  final String id;
+  final String title;
+  final String details;
+  final String requesterId;
+  final String requesterName;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final String status;
+  final bool isSosActive;
+
+  bool get isResolved => status == resolvedStatus;
+
+  MeshHelpRequest withSosActive(bool value, {bool touchUpdatedAt = false}) {
+    if (value == isSosActive && !touchUpdatedAt) {
+      return this;
+    }
+    return MeshHelpRequest(
+      id: id,
+      title: title,
+      details: details,
+      requesterId: requesterId,
+      requesterName: requesterName,
+      createdAt: createdAt,
+      updatedAt: touchUpdatedAt ? DateTime.now() : updatedAt,
+      status: status,
+      isSosActive: value,
+    );
+  }
+
+  MeshHelpRequest markResolved({required bool isSosActive}) {
+    return MeshHelpRequest(
+      id: id,
+      title: title,
+      details: details,
+      requesterId: requesterId,
+      requesterName: requesterName,
+      createdAt: createdAt,
+      updatedAt: DateTime.now(),
+      status: resolvedStatus,
+      isSosActive: isSosActive,
+    );
+  }
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'helpId': id,
+      'title': title,
+      'details': details,
+      'requesterId': requesterId,
+      'requesterName': requesterName,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      'updatedAt': updatedAt.toUtc().toIso8601String(),
+      'status': status,
+      'isResolved': isResolved,
+      'isSosActive': isSosActive,
+    };
+  }
+
+  Map<String, Object?> toPacket({int hops = 0}) {
+    return <String, Object?>{
+      'kind': MeshChatService._helpKind,
+      'app': MeshChatService._appName,
+      'senderId': requesterId,
+      'senderName': requesterName,
+      'tcpPort': MeshChatService.tcpPort,
+      'hops': hops,
+      ...toMap(),
+    };
+  }
+}
+
+class MeshSupply {
+  const MeshSupply({
+    required this.id,
+    required this.title,
+    required this.quantity,
+    required this.note,
+    required this.offeredById,
+    required this.offeredByName,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.status,
+    this.type = shareType,
+    this.exchangeFor = '',
+  });
+
+  static const String availableStatus = 'available';
+  static const String takenStatus = 'taken';
+  static const String shareType = 'share';
+  static const String exchangeType = 'exchange';
+
+  static MeshSupply? fromMap(Map<String, Object?> map) {
+    final id = MeshChatService._stringValue(map['supplyId']);
+    final title = MeshChatService._stringValue(map['title']);
+    final offeredById =
+        MeshChatService._stringValue(map['offeredById']) ??
+        MeshChatService._stringValue(map['senderId']);
+    final offeredByName =
+        MeshChatService._stringValue(map['offeredByName']) ??
+        MeshChatService._stringValue(map['senderName']);
+    if (id == null ||
+        id.isEmpty ||
+        title == null ||
+        title.trim().isEmpty ||
+        offeredById == null ||
+        offeredByName == null) {
+      return null;
+    }
+
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    final updatedAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['updatedAt']) ?? '',
+        ) ??
+        createdAt;
+    return MeshSupply(
+      id: id,
+      title: title,
+      quantity: MeshChatService._stringValue(map['quantity']) ?? '',
+      note: MeshChatService._stringValue(map['note']) ?? '',
+      offeredById: offeredById,
+      offeredByName: offeredByName,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      status:
+          MeshChatService._stringValue(map['status']) ??
+          (map['isTaken'] == true ? takenStatus : availableStatus),
+      type: MeshChatService._stringValue(map['type']) == exchangeType
+          ? exchangeType
+          : shareType,
+      exchangeFor: MeshChatService._stringValue(map['exchangeFor']) ?? '',
+    );
+  }
+
+  final String id;
+  final String title;
+  final String quantity;
+  final String note;
+  final String offeredById;
+  final String offeredByName;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final String status;
+  final String type;
+  final String exchangeFor;
+
+  bool get isTaken => status == takenStatus;
+  bool get isExchange => type == exchangeType;
+
+  MeshSupply markTaken() {
+    return MeshSupply(
+      id: id,
+      title: title,
+      quantity: quantity,
+      note: note,
+      offeredById: offeredById,
+      offeredByName: offeredByName,
+      createdAt: createdAt,
+      updatedAt: DateTime.now(),
+      status: takenStatus,
+      type: type,
+      exchangeFor: exchangeFor,
+    );
+  }
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'supplyId': id,
+      'title': title,
+      'quantity': quantity,
+      'note': note,
+      'offeredById': offeredById,
+      'offeredByName': offeredByName,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      'updatedAt': updatedAt.toUtc().toIso8601String(),
+      'status': status,
+      'isTaken': isTaken,
+      'type': type,
+      'exchangeFor': exchangeFor,
+    };
+  }
+
+  Map<String, Object?> toPacket({int hops = 0}) {
+    return <String, Object?>{
+      'kind': MeshChatService._supplyKind,
+      'app': MeshChatService._appName,
+      'senderId': offeredById,
+      'senderName': offeredByName,
+      'tcpPort': MeshChatService.tcpPort,
+      'hops': hops,
+      ...toMap(),
+    };
+  }
+}
+
+class MeshCreditVote {
+  const MeshCreditVote({
+    required this.voterId,
+    required this.voterName,
+    required this.targetId,
+    required this.targetName,
+    required this.createdAt,
+  });
+
+  static MeshCreditVote? fromMap(Map<String, Object?> map) {
+    final voterId =
+        MeshChatService._stringValue(map['voterId']) ??
+        MeshChatService._stringValue(map['senderId']);
+    final voterName =
+        MeshChatService._stringValue(map['voterName']) ??
+        MeshChatService._stringValue(map['senderName']);
+    final targetId = MeshChatService._stringValue(map['targetId']);
+    final targetName = MeshChatService._stringValue(map['targetName']);
+    if (voterId == null ||
+        voterName == null ||
+        targetId == null ||
+        targetName == null ||
+        voterId == targetId) {
+      return null;
+    }
+
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    return MeshCreditVote(
+      voterId: voterId,
+      voterName: voterName,
+      targetId: targetId,
+      targetName: targetName,
+      createdAt: createdAt,
+    );
+  }
+
+  final String voterId;
+  final String voterName;
+  final String targetId;
+  final String targetName;
+  final DateTime createdAt;
+
+  String get key => MeshChatService._creditVoteKey(voterId, targetId);
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'voterId': voterId,
+      'voterName': voterName,
+      'targetId': targetId,
+      'targetName': targetName,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+    };
+  }
+
+  Map<String, Object?> toPacket({int hops = 0}) {
+    return <String, Object?>{
+      'kind': MeshChatService._creditKind,
+      'app': MeshChatService._appName,
+      'senderId': voterId,
+      'senderName': voterName,
+      'tcpPort': MeshChatService.tcpPort,
+      'hops': hops,
+      ...toMap(),
+    };
+  }
+}
+
+class MeshRoom {
+  const MeshRoom({
+    required this.id,
+    required this.name,
+    required this.createdBy,
+    required this.createdAt,
+  });
+
+  static MeshRoom? fromMap(Map<String, Object?> map) {
+    final id = MeshChatService._stringValue(map['roomId']);
+    final name = MeshChatService._stringValue(map['roomName']);
+    if (id == null || id.isEmpty || name == null || name.trim().isEmpty) {
+      return null;
+    }
+
+    final createdAt =
+        DateTime.tryParse(
+          MeshChatService._stringValue(map['createdAt']) ?? '',
+        ) ??
+        DateTime.now();
+    return MeshRoom(
+      id: id,
+      name: name,
+      createdBy:
+          MeshChatService._stringValue(map['createdBy']) ??
+          MeshChatService._stringValue(map['senderId']) ??
+          '',
+      createdAt: createdAt,
+    );
+  }
+
+  final String id;
+  final String name;
+  final String createdBy;
+  final DateTime createdAt;
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'roomId': id,
+      'roomName': name,
+      'createdBy': createdBy,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+    };
+  }
+
+  Map<String, Object?> toPacket({
+    required String senderId,
+    required String senderName,
+    String? senderUserName,
+    int hops = 0,
+  }) {
+    return <String, Object?>{
+      'kind': MeshChatService._roomKind,
+      'app': MeshChatService._appName,
+      'senderId': senderId,
+      'senderName': senderName,
+      if ((senderUserName ?? '').trim().isNotEmpty)
+        'senderUserName': senderUserName!.trim(),
+      'tcpPort': MeshChatService.tcpPort,
+      'hops': hops,
+      ...toMap(),
+    };
+  }
+}
+
+class MeshPeer {
+  MeshPeer({
+    required this.id,
+    required this.name,
+    required this.displayName,
+    required this.userName,
+    required this.host,
+    required this.port,
+    required this.sosActive,
+    required this.lastSeen,
+    this.supportsChatAck = false,
+    this.supportsChatPull = false,
+  });
+
+  final String id;
+  String name;
+  String displayName;
+  String userName;
+  String host;
+  int port;
+  bool sosActive;
+  bool supportsChatAck;
+  bool supportsChatPull;
+  DateTime lastSeen;
+
+  bool get isOnline => host.startsWith('online:');
+}
+
+class MeshMessage {
+  const MeshMessage({
+    required this.id,
+    required this.roomId,
+    required this.roomName,
+    required this.senderId,
+    required this.senderName,
+    this.senderDisplayName = '',
+    this.senderUserName = '',
+    required this.text,
+    required this.sentAt,
+    required this.isMine,
+  });
+
+  final String id;
+  final String roomId;
+  final String roomName;
+  final String senderId;
+  final String senderName;
+  final String senderDisplayName;
+  final String senderUserName;
+  final String text;
+  final DateTime sentAt;
+  final bool isMine;
+
+  Map<String, Object?> toPacket({int hops = 0}) {
+    final lightPointName = senderDisplayName.trim().isEmpty
+        ? senderName
+        : senderDisplayName.trim();
+    final cleanUserName = senderUserName.trim();
+    return <String, Object?>{
+      'kind': MeshChatService._chatKind,
+      'app': MeshChatService._appName,
+      'messageId': id,
+      'roomId': roomId,
+      'roomName': roomName,
+      'senderId': senderId,
+      'senderName': lightPointName,
+      if (cleanUserName.isNotEmpty) 'senderUserName': cleanUserName,
+      'tcpPort': MeshChatService.tcpPort,
+      'text': text,
+      'sentAt': sentAt.toUtc().toIso8601String(),
+      'hops': hops,
+    };
+  }
+}

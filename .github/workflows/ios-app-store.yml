@@ -1,0 +1,386 @@
+name: iOS App Store Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_name:
+        description: "Optional iOS version, for example 1.0.6. Defaults to pubspec.yaml."
+        required: false
+        type: string
+      build_number:
+        description: "Optional App Store build number. Defaults to pubspec build + GitHub run number."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+      - "ios-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-app-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    name: Build and Upload IPA
+    runs-on: macos-26
+    environment: apple
+    timeout-minutes: 60
+
+    env:
+      IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+      IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+      IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+      AIECO_ONLINE_RELAY_URL: ${{ secrets.AIECO_ONLINE_RELAY_URL }}
+      AIECO_NETWORK_DIRECTORY_URL: ${{ secrets.AIECO_NETWORK_DIRECTORY_URL }}
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      REQUESTED_BUILD_NAME: ${{ github.event.inputs.build_name || '' }}
+      REQUESTED_BUILD_NUMBER: ${{ github.event.inputs.build_number || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Verify Xcode SDK
+        shell: bash
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          iphoneos_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iPhoneOS SDK version: $iphoneos_sdk_version"
+          if [[ "${iphoneos_sdk_version%%.*}" -lt 26 ]]; then
+            echo "::error::App Store Connect requires iOS 26 SDK or later. Current iPhoneOS SDK is $iphoneos_sdk_version."
+            exit 1
+          fi
+
+      - name: Verify required secrets
+        shell: bash
+        run: |
+          missing=0
+          for name in \
+            IOS_BUNDLE_ID \
+            IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
+            IOS_PROVISIONING_PROFILE_BASE64 \
+            APP_STORE_CONNECT_API_KEY_ID \
+            APP_STORE_CONNECT_API_ISSUER_ID \
+            APP_STORE_CONNECT_API_KEY_BASE64 \
+            AIECO_ONLINE_RELAY_URL \
+            GOOGLE_MAPS_API_KEY
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::GitHub secret $name is not configured."
+              missing=1
+            fi
+          done
+          IOS_BUNDLE_ID="$(printf "%s" "$IOS_BUNDLE_ID" | tr -d '[:space:]')"
+          if [[ "$IOS_BUNDLE_ID" != "aieco.light.lifebuoy" ]]; then
+            echo "::error::IOS_BUNDLE_ID must be aieco.light.lifebuoy for this project."
+            missing=1
+          fi
+          echo "IOS_BUNDLE_ID=$IOS_BUNDLE_ID" >> "$GITHUB_ENV"
+          exit "$missing"
+
+      - name: Resolve build version
+        shell: bash
+        run: |
+          pubspec_version="$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          pubspec_build_name="${pubspec_version%%+*}"
+          pubspec_build_number="${pubspec_version#*+}"
+          if [[ "$pubspec_build_number" == "$pubspec_version" || ! "$pubspec_build_number" =~ ^[0-9]+$ ]]; then
+            pubspec_build_number=0
+          fi
+
+          build_name="${REQUESTED_BUILD_NAME:-$pubspec_build_name}"
+          build_number="${REQUESTED_BUILD_NUMBER:-$((pubspec_build_number + GITHUB_RUN_NUMBER))}"
+
+          if [[ -z "$build_name" || -z "$build_number" ]]; then
+            echo "::error::Unable to resolve build name or build number."
+            exit 1
+          fi
+          if [[ ! "$build_number" =~ ^[0-9]+$ ]]; then
+            echo "::error::Build number must be numeric. Got: $build_number"
+            exit 1
+          fi
+
+          echo "IOS_BUILD_NAME=$build_name" >> "$GITHUB_ENV"
+          echo "IOS_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+          echo "Using iOS version $build_name ($build_number)."
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Run tests
+        continue-on-error: true
+        run: flutter test
+
+      - name: Install signing certificate and provisioning profile
+        id: signing
+        shell: bash
+        run: |
+          certificate_path="$RUNNER_TEMP/distribution.p12"
+          profile_path="$RUNNER_TEMP/app_store.mobileprovision"
+          profile_plist_path="$RUNNER_TEMP/profile.plist"
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+
+          decode_base64_secret() {
+            local secret_name="$1"
+            local output_path="$2"
+            local log_path="$RUNNER_TEMP/${secret_name}.decode.log"
+
+            printf "%s" "${!secret_name}" | tr -d '[:space:]' | base64 -D > "$output_path" 2> "$log_path" || {
+              echo "::error::$secret_name is not valid base64. Generate it from the raw file and paste only the base64 text."
+              cat "$log_path"
+              exit 1
+            }
+
+            if [[ ! -s "$output_path" ]]; then
+              echo "::error::$secret_name decoded to an empty file."
+              exit 1
+            fi
+          }
+
+          decode_base64_secret IOS_DISTRIBUTION_CERTIFICATE_BASE64 "$certificate_path"
+          decode_base64_secret IOS_PROVISIONING_PROFILE_BASE64 "$profile_path"
+
+          openssl pkcs12 \
+            -info \
+            -in "$certificate_path" \
+            -passin "pass:$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+            -noout > /dev/null 2> "$RUNNER_TEMP/p12-validate.log" || {
+              echo "::error::Apple Distribution .p12 or IOS_DISTRIBUTION_CERTIFICATE_PASSWORD is invalid."
+              cat "$RUNNER_TEMP/p12-validate.log"
+              exit 1
+            }
+
+          security cms -D -i "$profile_path" > "$profile_plist_path" || {
+            echo "::error::IOS_PROVISIONING_PROFILE_BASE64 is not a valid .mobileprovision file."
+            exit 1
+          }
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          import_certificate() {
+            local import_path="$1"
+            security import "$import_path" \
+              -k "$keychain_path" \
+              -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+              -T /usr/bin/codesign \
+              -T /usr/bin/security
+          }
+
+          if ! import_certificate "$certificate_path"; then
+            echo "::warning::Direct .p12 import failed. Re-wrapping certificate for macOS security import compatibility."
+            extracted_pem_path="$RUNNER_TEMP/distribution.pem"
+            legacy_certificate_path="$RUNNER_TEMP/distribution-legacy.p12"
+
+            openssl pkcs12 \
+              -in "$certificate_path" \
+              -passin "pass:$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+              -nodes \
+              -out "$extracted_pem_path" > /dev/null 2> "$RUNNER_TEMP/p12-extract.log" || {
+                echo "::error::Unable to extract the .p12. Check IOS_DISTRIBUTION_CERTIFICATE_PASSWORD."
+                exit 1
+              }
+
+            openssl pkcs12 \
+              -export \
+              -in "$extracted_pem_path" \
+              -out "$legacy_certificate_path" \
+              -passout "pass:$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" \
+              -name "Apple Distribution" \
+              -certpbe PBE-SHA1-3DES \
+              -keypbe PBE-SHA1-3DES \
+              -macalg sha1 > /dev/null 2> "$RUNNER_TEMP/p12-rewrap.log" || {
+                echo "::error::Unable to re-wrap the .p12 for macOS security import."
+                exit 1
+              }
+
+            import_certificate "$legacy_certificate_path" || {
+              echo "::error::macOS security import failed after re-wrapping. Regenerate the .p12 using OpenSSL -legacy or Keychain Access."
+              exit 1
+            }
+          fi
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print UUID' "$profile_plist_path")"
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print Name' "$profile_plist_path")"
+          team_id="$(/usr/libexec/PlistBuddy -c 'Print TeamIdentifier:0' "$profile_plist_path")"
+          cp "$profile_path" "$HOME/Library/MobileDevice/Provisioning Profiles/$profile_uuid.mobileprovision"
+
+          echo "APPLE_TEAM_ID=$team_id" >> "$GITHUB_ENV"
+          echo "IOS_PROFILE_NAME=$profile_name" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          echo "Installed provisioning profile $profile_name for team $team_id."
+
+      - name: Prepare App Store Connect API key
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          api_key_path="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          printf "%s" "$APP_STORE_CONNECT_API_KEY_BASE64" | tr -d '[:space:]' | base64 -D > "$api_key_path"
+          chmod 600 "$api_key_path"
+
+      - name: Build Flutter iOS app
+        shell: bash
+        run: |
+          dart_defines=()
+          if [[ -n "$AIECO_NETWORK_DIRECTORY_URL" ]]; then
+            dart_defines+=(--dart-define "AIECO_NETWORK_DIRECTORY_URL=$AIECO_NETWORK_DIRECTORY_URL")
+          fi
+          if [[ -n "$AIECO_ONLINE_RELAY_URL" ]]; then
+            echo "Including dart define AIECO_ONLINE_RELAY_URL."
+            dart_defines+=(--dart-define "AIECO_ONLINE_RELAY_URL=$AIECO_ONLINE_RELAY_URL")
+          fi
+          if [[ -n "$GOOGLE_MAPS_API_KEY" ]]; then
+            echo "Including dart define GOOGLE_MAPS_API_KEY."
+            dart_defines+=(--dart-define "GOOGLE_MAPS_API_KEY=$GOOGLE_MAPS_API_KEY")
+          fi
+
+          flutter build ios \
+            --release \
+            --no-codesign \
+            --build-name "$IOS_BUILD_NAME" \
+            --build-number "$IOS_BUILD_NUMBER" \
+            "${dart_defines[@]}"
+
+      - name: Archive signed iOS app
+        shell: bash
+        run: |
+          {
+            printf '\n'
+            printf 'DEVELOPMENT_TEAM=%s\n' "$APPLE_TEAM_ID"
+            printf 'CODE_SIGN_STYLE=Manual\n'
+            printf 'CODE_SIGN_IDENTITY=Apple Distribution\n'
+            printf 'PROVISIONING_PROFILE_SPECIFIER=%s\n' "$IOS_PROFILE_NAME"
+            printf 'FLUTTER_BUILD_NAME=%s\n' "$IOS_BUILD_NAME"
+            printf 'FLUTTER_BUILD_NUMBER=%s\n' "$IOS_BUILD_NUMBER"
+            printf 'MARKETING_VERSION=%s\n' "$IOS_BUILD_NAME"
+            printf 'CURRENT_PROJECT_VERSION=%s\n' "$IOS_BUILD_NUMBER"
+          } >> ios/Flutter/Release.xcconfig
+
+          xcodebuild clean archive \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            APP_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            FLUTTER_BUILD_NAME="$IOS_BUILD_NAME" \
+            FLUTTER_BUILD_NUMBER="$IOS_BUILD_NUMBER" \
+            MARKETING_VERSION="$IOS_BUILD_NAME" \
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER"
+
+      - name: Export signed IPA
+        shell: bash
+        run: |
+          mkdir -p build/ios/export
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>$APPLE_TEAM_ID</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$IOS_BUNDLE_ID</key>
+              <string>$IOS_PROFILE_NAME</string>
+            </dict>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath build/ios/export
+
+      - name: Verify exported IPA version
+        shell: bash
+        run: |
+          ipa_path="$(find build/ios/export -name '*.ipa' -print -quit)"
+          if [[ -z "$ipa_path" ]]; then
+            echo "::error::No IPA file found in build/ios/export."
+            exit 1
+          fi
+
+          verify_dir="$RUNNER_TEMP/ipa-verify"
+          rm -rf "$verify_dir"
+          mkdir -p "$verify_dir"
+          unzip -q "$ipa_path" -d "$verify_dir"
+
+          app_plist="$(find "$verify_dir/Payload" -path '*.app/Info.plist' -print -quit)"
+          if [[ -z "$app_plist" ]]; then
+            echo "::error::Unable to find app Info.plist inside exported IPA."
+            exit 1
+          fi
+
+          actual_version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app_plist")"
+          actual_build="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$app_plist")"
+          echo "Exported IPA version: $actual_version ($actual_build)."
+
+          if [[ "$actual_version" != "$IOS_BUILD_NAME" || "$actual_build" != "$IOS_BUILD_NUMBER" ]]; then
+            echo "::error::Exported IPA version mismatch. Expected $IOS_BUILD_NAME ($IOS_BUILD_NUMBER), got $actual_version ($actual_build)."
+            exit 1
+          fi
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app-store-ipa
+          path: build/ios/export/*.ipa
+          if-no-files-found: error
+
+      - name: Upload to App Store Connect
+        shell: bash
+        run: |
+          ipa_path="$(find build/ios/export -name '*.ipa' -print -quit)"
+          if [[ -z "$ipa_path" ]]; then
+            echo "::error::No IPA file found in build/ios/export."
+            exit 1
+          fi
+
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$ipa_path" \
+            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
+
+      - name: Clean up signing keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${KEYCHAIN_PATH:-}" && -f "$KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

@@ -1,0 +1,28 @@
+part of 'main.dart';
+
+const _districtNames = <String, String>{
+  'hk-central-western': '中西區',
+  'hk-eastern': '東區',
+  'hk-southern': '南區',
+  'hk-wan-chai': '灣仔區',
+  'hk-kowloon-city': '九龍城區',
+  'hk-yau-tsim-mong': '油尖旺區',
+  'hk-sham-shui-po': '深水埗區',
+  'hk-wong-tai-sin': '黃大仙區',
+  'hk-kwun-tong': '觀塘區',
+  'hk-tai-po': '大埔區',
+  'hk-yuen-long': '元朗區',
+  'hk-tuen-mun': '屯門區',
+  'hk-north': '北區',
+  'hk-sai-kung': '西貢區',
+  'hk-sha-tin': '沙田區',
+  'hk-tsuen-wan': '荃灣區',
+  'hk-kwai-tsing': '葵青區',
+  'hk-islands': '離島區',
+};
+
+String _districtArea(Json entry) {
+  final district = _districtNames[entry['community_id']];
+  final area = entry['area'].toString();
+  return district == null || district == area ? area : '$district · $area';
+}

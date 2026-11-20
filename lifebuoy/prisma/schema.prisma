@@ -1,0 +1,281 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("NUXT_DATABASE_URL")
+}
+
+model audit_log {
+  id           BigInt   @id @default(autoincrement())
+  community_id String   @db.VarChar(36)
+  actor_id     String   @db.VarChar(36)
+  action       String   @db.VarChar(40)
+  target_id    String   @db.VarChar(36)
+  reason       String?  @db.VarChar(500)
+  created_at   DateTime @default(now()) @db.DateTime(6)
+  members      members  @relation(fields: [community_id, actor_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "audit_log_ibfk_1")
+
+  @@index([community_id, id], map: "community_id")
+  @@index([community_id, actor_id], map: "community_id_2")
+}
+
+model communities {
+  id      String    @id @db.VarChar(36)
+  name    String    @db.VarChar(100)
+  members members[]
+}
+
+model disputes {
+  community_id      String            @db.VarChar(36)
+  kind              disputes_kind
+  trade_id          String            @db.Char(36)
+  reporter_id       String            @db.VarChar(36)
+  reason            String            @db.VarChar(500)
+  outcome           disputes_outcome?
+  resolution_reason String?           @db.VarChar(500)
+  created_at        DateTime          @default(now()) @db.DateTime(6)
+  members           members           @relation(fields: [community_id, reporter_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "disputes_ibfk_1")
+
+  @@id([community_id, kind, trade_id])
+  @@index([community_id, reporter_id], map: "community_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model exchanges {
+  community_id                                        String          @db.VarChar(36)
+  id                                                  String          @db.Char(36)
+  offered_id                                          String          @db.Char(36)
+  wanted_id                                           String          @db.Char(36)
+  proposer_id                                         String          @db.VarChar(36)
+  owner_id                                            String          @db.VarChar(36)
+  meeting                                             String          @db.VarChar(200)
+  state                                               exchanges_state @default(proposed)
+  expires_at                                          DateTime?       @db.DateTime(6)
+  proposer_confirmed                                  Boolean         @default(false)
+  owner_confirmed                                     Boolean         @default(false)
+  completed_at                                        DateTime?       @db.DateTime(6)
+  items_exchanges_community_id_offered_idToitems      items           @relation("exchanges_community_id_offered_idToitems", fields: [community_id, offered_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "exchanges_ibfk_1")
+  items_exchanges_community_id_wanted_idToitems       items           @relation("exchanges_community_id_wanted_idToitems", fields: [community_id, wanted_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "exchanges_ibfk_2")
+  members_exchanges_community_id_proposer_idTomembers members         @relation("exchanges_community_id_proposer_idTomembers", fields: [community_id, proposer_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "exchanges_ibfk_3")
+  members_exchanges_community_id_owner_idTomembers    members         @relation("exchanges_community_id_owner_idTomembers", fields: [community_id, owner_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "exchanges_ibfk_4")
+
+  @@id([community_id, id])
+  @@index([community_id, offered_id], map: "community_id")
+  @@index([community_id, wanted_id], map: "community_id_2")
+  @@index([community_id, proposer_id], map: "community_id_3")
+  @@index([community_id, owner_id], map: "community_id_4")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model help_posts {
+  community_id String          @db.VarChar(36)
+  id           String          @db.Char(36)
+  author_id    String          @db.VarChar(36)
+  kind         help_posts_kind
+  title        String          @db.VarChar(120)
+  area         String          @db.VarChar(80)
+  minutes      Int?            @db.UnsignedSmallInt
+  created_at   DateTime        @default(now()) @db.DateTime(6)
+  members      members         @relation(fields: [community_id, author_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "help_posts_ibfk_1")
+  services     services?
+
+  @@id([community_id, id])
+  @@index([community_id, author_id], map: "community_id")
+}
+
+model items {
+  community_id                                       String      @db.VarChar(36)
+  id                                                 String      @db.Char(36)
+  owner_id                                           String      @db.VarChar(36)
+  title                                              String      @db.VarChar(120)
+  wanted                                             String      @db.VarChar(120)
+  area                                               String      @db.VarChar(80)
+  reserved_by                                        String?     @db.Char(36)
+  exchanged                                          Boolean     @default(false)
+  created_at                                         DateTime    @default(now()) @db.DateTime(6)
+  exchanges_exchanges_community_id_offered_idToitems exchanges[] @relation("exchanges_community_id_offered_idToitems")
+  exchanges_exchanges_community_id_wanted_idToitems  exchanges[] @relation("exchanges_community_id_wanted_idToitems")
+  members                                            members     @relation(fields: [community_id, owner_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "items_ibfk_1")
+
+  @@id([community_id, id])
+  @@index([community_id, owner_id], map: "community_id")
+}
+
+model member_credentials {
+  username      String  @id @db.VarChar(32)
+  community_id  String  @db.VarChar(36)
+  member_id     String  @db.VarChar(36)
+  password_salt Bytes   @db.Binary(16)
+  password_hash Bytes   @db.Binary(64)
+  members       members @relation(fields: [community_id, member_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "member_credentials_ibfk_1")
+
+  @@unique([community_id, member_id], map: "community_id")
+}
+
+model member_sessions {
+  token_hash   Bytes    @id @db.Binary(32)
+  community_id String   @db.VarChar(36)
+  member_id    String   @db.VarChar(36)
+  expires_at   DateTime @db.DateTime(6)
+  members      members  @relation(fields: [community_id, member_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "member_sessions_ibfk_1")
+
+  @@index([community_id, member_id, expires_at], map: "community_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model members {
+  community_id                                          String                @db.VarChar(36)
+  id                                                    String                @db.VarChar(36)
+  name                                                  String                @db.VarChar(100)
+  role                                                  members_role          @default(member)
+  balance                                               Int                   @default(0)
+  token_hash                                            Bytes?                @unique(map: "token_hash") @db.Binary(32)
+  audit_log                                             audit_log[]
+  disputes                                              disputes[]
+  exchanges_exchanges_community_id_proposer_idTomembers exchanges[]           @relation("exchanges_community_id_proposer_idTomembers")
+  exchanges_exchanges_community_id_owner_idTomembers    exchanges[]           @relation("exchanges_community_id_owner_idTomembers")
+  help_posts                                            help_posts[]
+  items                                                 items[]
+  member_credentials                                    member_credentials?
+  member_sessions                                       member_sessions[]
+  communities                                           communities           @relation(fields: [community_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "members_ibfk_1")
+  ratings_ratings_community_id_reviewer_idTomembers     ratings[]             @relation("ratings_community_id_reviewer_idTomembers")
+  ratings_ratings_community_id_subject_idTomembers      ratings[]             @relation("ratings_community_id_subject_idTomembers")
+  services_services_community_id_payer_idTomembers      services[]            @relation("services_community_id_payer_idTomembers")
+  services_services_community_id_provider_idTomembers   services[]            @relation("services_community_id_provider_idTomembers")
+  time_entries                                          time_entries[]
+  time_journals                                         time_journals[]
+  time_opening_credits                                  time_opening_credits?
+
+  @@id([community_id, id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model ratings {
+  community_id                                      String       @db.VarChar(36)
+  kind                                              ratings_kind
+  trade_id                                          String       @db.Char(36)
+  reviewer_id                                       String       @db.VarChar(36)
+  subject_id                                        String       @db.VarChar(36)
+  stars                                             Int          @db.TinyInt
+  created_at                                        DateTime     @default(now()) @db.DateTime(6)
+  members_ratings_community_id_reviewer_idTomembers members      @relation("ratings_community_id_reviewer_idTomembers", fields: [community_id, reviewer_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "ratings_ibfk_1")
+  members_ratings_community_id_subject_idTomembers  members      @relation("ratings_community_id_subject_idTomembers", fields: [community_id, subject_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "ratings_ibfk_2")
+
+  @@id([community_id, kind, trade_id, reviewer_id])
+  @@index([community_id, subject_id, reviewer_id], map: "community_id")
+  @@index([community_id, reviewer_id], map: "community_id_2")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model services {
+  community_id                                       String          @db.VarChar(36)
+  id                                                 String          @db.Char(36)
+  post_id                                            String          @db.Char(36)
+  payer_id                                           String          @db.VarChar(36)
+  provider_id                                        String          @db.VarChar(36)
+  minutes                                            Int             @db.UnsignedSmallInt
+  payer_agreed                                       Boolean         @default(false)
+  provider_agreed                                    Boolean         @default(false)
+  payer_confirmed                                    Boolean         @default(false)
+  provider_confirmed                                 Boolean         @default(false)
+  state                                              services_state  @default(agreement)
+  completed_at                                       DateTime?       @db.DateTime(6)
+  help_posts                                         help_posts      @relation(fields: [community_id, post_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "services_ibfk_1")
+  members_services_community_id_payer_idTomembers    members         @relation("services_community_id_payer_idTomembers", fields: [community_id, payer_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "services_ibfk_2")
+  members_services_community_id_provider_idTomembers members         @relation("services_community_id_provider_idTomembers", fields: [community_id, provider_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "services_ibfk_3")
+  time_journals                                      time_journals[]
+
+  @@id([community_id, id])
+  @@unique([community_id, post_id], map: "community_id")
+  @@index([community_id, payer_id], map: "community_id_2")
+  @@index([community_id, provider_id], map: "community_id_3")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model time_entries {
+  community_id  String             @db.VarChar(36)
+  service_id    String             @db.Char(36)
+  kind          time_journals_kind
+  member_id     String             @db.VarChar(36)
+  delta         Int                @db.SmallInt
+  time_journals time_journals      @relation(fields: [community_id, service_id, kind], references: [community_id, service_id, kind], onDelete: NoAction, onUpdate: NoAction, map: "time_entries_ibfk_1")
+  members       members            @relation(fields: [community_id, member_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "time_entries_ibfk_2")
+
+  @@id([community_id, service_id, kind, member_id])
+  @@index([community_id, member_id], map: "community_id")
+}
+
+model time_journals {
+  community_id String             @db.VarChar(36)
+  service_id   String             @db.Char(36)
+  kind         time_journals_kind
+  actor_id     String             @db.VarChar(36)
+  reason       String?            @db.VarChar(500)
+  created_at   DateTime           @default(now()) @db.DateTime(6)
+  time_entries time_entries[]
+  services     services           @relation(fields: [community_id, service_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "time_journals_ibfk_1")
+  members      members            @relation(fields: [community_id, actor_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "time_journals_ibfk_2")
+
+  @@id([community_id, service_id, kind])
+  @@index([community_id, actor_id], map: "community_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model time_opening_credits {
+  community_id String    @db.VarChar(36)
+  member_id    String    @db.VarChar(36)
+  minutes      Int       @db.UnsignedSmallInt
+  applied_at   DateTime? @db.DateTime(6)
+  members      members   @relation(fields: [community_id, member_id], references: [community_id, id], onDelete: NoAction, onUpdate: NoAction, map: "time_opening_credits_ibfk_1")
+
+  @@id([community_id, member_id])
+}
+
+enum disputes_kind {
+  service
+  exchange
+}
+
+enum ratings_kind {
+  service
+  exchange
+}
+
+enum time_journals_kind {
+  settlement
+  reversal
+}
+
+enum help_posts_kind {
+  request
+  offer
+  free
+}
+
+enum members_role {
+  member
+  admin
+}
+
+enum disputes_outcome {
+  restore
+  exclude
+}
+
+enum exchanges_state {
+  proposed
+  reserved
+  completed
+  cancelled
+}
+
+enum services_state {
+  agreement
+  pending
+  settled
+  cancelled
+  reversed
+}

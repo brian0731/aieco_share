@@ -1,0 +1,19 @@
+{
+  "enabled": false,
+  "relays": [
+    {
+      "id": "test-a",
+      "url": "ws://127.0.0.1:47892/ws/light",
+      "approved": true,
+      "enabled": true,
+      "rooms": [{"local": "room:main", "shared": "community-public", "public": true, "approved": true}]
+    },
+    {
+      "id": "test-b",
+      "url": "ws://127.0.0.1:47893/ws/light",
+      "approved": true,
+      "enabled": true,
+      "rooms": [{"local": "room:main", "shared": "community-public", "public": true, "approved": true}]
+    }
+  ]
+}

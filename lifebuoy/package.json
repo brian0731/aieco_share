@@ -1,0 +1,22 @@
+{
+  "name": "community-lifebuoy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:status": "prisma migrate status",
+    "seed:local": "node scripts/seed.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "dotenv": "17.2.3",
+    "mysql2": "3.24.6",
+    "nuxt": "4.6.4"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}
