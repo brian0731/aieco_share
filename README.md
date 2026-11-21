@@ -103,6 +103,10 @@ adb install -r build/app/outputs/flutter-apk/app-debug.apk
 
 Android 套件 ID 為 `aieco.light.lifebuoy`。省略 `LIFEBUOY_API_URL` 時，App 預設連接 `https://lifebuoy.aieco.hk`。正式 APK 發布需使用社區救生圈的 Android 發布金鑰簽署。
 
+## iOS 建置與上傳
+
+GitHub Actions 的 **iOS App Store Release** 會在 macOS 建置和簽署 IPA，再上傳至 App Store Connect。首次使用請依教學準備 Apple Distribution 憑證、描述檔及 App Store Connect Team Key。[iOS 上傳與金鑰設定](docs/IOS_APP_STORE_GITHUB_ACTIONS.md)
+
 ## 文件
 
 - [本機啟動、建置與驗收](docs/COMMUNITY_LIFEBUOY.md)

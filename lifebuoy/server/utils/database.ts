@@ -4,6 +4,11 @@ import mysql, { type Pool, type PoolConnection, type RowDataPacket } from 'mysql
 
 export type Db = Pool | PoolConnection
 export type Actor = { id: string; community_id: string; role: 'member' | 'admin' }
+export type Membership = Actor & {
+  origin_community_id: string | null
+  account_state: 'active' | 'moved' | 'deleted'
+  name: string
+}
 let pool: Pool | undefined
 
 export function database(event: H3Event) {
@@ -26,11 +31,29 @@ export async function authenticate(event: H3Event, db: Db) {
   const digest = bearerDigest(event)
   const [session] = await rows<Actor>(db, `SELECT m.id,m.community_id,m.role
     FROM member_sessions s JOIN members m ON (m.community_id,m.id)=(s.community_id,s.member_id)
-    WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP(6)`, [digest])
+    WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP(6) AND m.account_state='active'`, [digest])
   if (session) return session
-  const [actor] = await rows<Actor>(db, 'SELECT id,community_id,role FROM members WHERE token_hash=?', [digest])
+  const [actor] = await rows<Actor>(db, "SELECT id,community_id,role FROM members WHERE token_hash=? AND account_state='active'", [digest])
   if (!actor) fail(401, 'invalid_token')
   return actor
+}
+
+export async function lockMembership(db: PoolConnection, actor: Actor) {
+  const [member] = await rows<Membership>(db,
+    'SELECT id,community_id,role,name,origin_community_id,account_state FROM members WHERE community_id=? AND id=? FOR UPDATE',
+    [actor.community_id, actor.id])
+  if (!member || member.account_state !== 'active') fail(401, 'invalid_token')
+  return member
+}
+
+export async function memberDistricts(db: Db, actor: Actor) {
+  const [member] = await rows<{ origin: string }>(db,
+    'SELECT COALESCE(origin_community_id,community_id) AS origin FROM members WHERE community_id=? AND id=?',
+    [actor.community_id, actor.id])
+  if (!member) fail(401, 'invalid_token')
+  const history = await rows<{ community_id: string }>(db,
+    'SELECT community_id FROM members WHERE id=? AND origin_community_id=?', [actor.id, member.origin])
+  return { origin: member.origin, districts: [member.origin, ...history.map(row => row.community_id)] }
 }
 
 export function bearerDigest(event: H3Event) {

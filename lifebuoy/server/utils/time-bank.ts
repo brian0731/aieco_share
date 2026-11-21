@@ -9,6 +9,7 @@ export type HelpPost = {
   title: string
   area: string
   minutes: number | null
+  withdrawn: number
 }
 export type Service = {
   id: string
@@ -54,6 +55,7 @@ export async function matchHelp(db: PoolConnection, actor: Actor, id: string) {
     if (existing.payer_id !== payer || existing.provider_id !== provider) fail(409, 'already_matched')
     return existing
   }
+  if (post.withdrawn) fail(409, 'post_not_matchable')
   await db.execute(
     'INSERT INTO services (community_id,id,post_id,payer_id,provider_id,minutes) VALUES (?,?,?,?,?,?)',
     [community, id, id, payer, provider, post.minutes],
@@ -74,20 +76,27 @@ async function postJournal(db: PoolConnection, actor: Actor, service: Service, k
     ? [service.payer_id, service.provider_id]
     : [service.provider_id, service.payer_id]
 
+  const balanceDistrict = new Map<string, string>()
   let debitBalance = 0
   for (const id of [debit, credit].sort()) {
+    const [membership] = await rows<{ origin: string }>(db,
+      'SELECT COALESCE(origin_community_id,community_id) AS origin FROM members WHERE community_id=? AND id=?',
+      [community, id])
+    if (!membership) fail(409, 'insufficient_balance')
+    balanceDistrict.set(id, membership.origin)
     const [account] = await rows<{ balance: number }>(db,
-      'SELECT balance FROM members WHERE community_id=? AND id=? FOR UPDATE', [community, id])
+      'SELECT balance FROM members WHERE community_id=? AND id=? FOR UPDATE', [membership.origin, id])
     if (!account) fail(409, 'insufficient_balance')
     if (id === debit) debitBalance = account.balance
   }
+  const providerDistrict = balanceDistrict.get(service.provider_id)!
 
   // Member locks serialize changes to the provider's opening credit across services.
   let repayment = 0
   if (kind === 'settlement') {
     const [opening] = await rows<{ minutes: number, repaid_minutes: number }>(db,
       'SELECT minutes,repaid_minutes FROM time_opening_credits WHERE community_id=? AND member_id=? AND applied_at IS NOT NULL FOR UPDATE',
-      [community, service.provider_id])
+      [providerDistrict, service.provider_id])
     if (opening) repayment = Math.min(5, service.minutes, opening.minutes - opening.repaid_minutes)
   } else {
     const [settlement] = await rows<{ opening_credit_repayment: number }>(db,
@@ -110,11 +119,11 @@ async function postJournal(db: PoolConnection, actor: Actor, service: Service, k
       [community, service.id, kind, owner, delta],
     )
     await db.execute('UPDATE members SET balance=balance+? WHERE community_id=? AND id=?',
-      [delta + (owner === service.provider_id ? repaymentDelta : 0), community, owner])
+      [delta + (owner === service.provider_id ? repaymentDelta : 0), balanceDistrict.get(owner), owner])
   }
   if (repayment) {
     await db.execute('UPDATE time_opening_credits SET repaid_minutes=repaid_minutes-? WHERE community_id=? AND member_id=?',
-      [repaymentDelta, community, service.provider_id])
+      [repaymentDelta, providerDistrict, service.provider_id])
   }
 }
 

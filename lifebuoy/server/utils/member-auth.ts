@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 import type { H3Event } from 'h3'
-import type { Pool } from 'mysql2/promise'
-import { boundedText, fail, rows, transaction, type Db } from './database'
+import type { Pool, PoolConnection } from 'mysql2/promise'
+import { boundedText, fail, lockMembership, rows, transaction, type Actor, type Db } from './database'
 import { requiredDistrict } from './districts'
 
 const derive = promisify(scrypt)
@@ -32,7 +32,7 @@ export function loginRateLimit(event: H3Event) {
   }
 }
 
-async function passwordHash(password: string, salt: Buffer) {
+export async function passwordHash(password: string, salt: Buffer) {
   if (activeHashes >= 4) fail(429, 'try_again_later')
   activeHashes++
   try {
@@ -42,11 +42,15 @@ async function passwordHash(password: string, salt: Buffer) {
   }
 }
 
+export function validPassword(password: unknown): password is string {
+  return typeof password === 'string' && password.length >= 12 && Buffer.byteLength(password) <= 256
+}
+
 function credentials(input: Record<string, unknown>, registering: boolean) {
   const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : ''
   const password = input.password
   if (!/^[a-z0-9_]{3,32}$/.test(username)) fail(400, 'invalid_username')
-  if (typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password) > 256) {
+  if (!validPassword(password)) {
     fail(registering ? 400 : 401, registering ? 'invalid_password' : 'incorrect_credentials')
   }
   return { username, password }
@@ -99,13 +103,27 @@ export async function registerMember(db: Pool, input: Record<string, unknown>) {
 
 export async function loginMember(db: Pool, input: Record<string, unknown>) {
   const { username, password } = credentials(input, false)
-  const [member] = await rows<{
-    community_id: string
-    member_id: string
-    password_salt: Buffer
-    password_hash: Buffer
-  }>(db, 'SELECT community_id,member_id,password_salt,password_hash FROM member_credentials WHERE username=?', [username])
+  const query = 'SELECT community_id,member_id,password_salt,password_hash FROM member_credentials WHERE username=?'
+  const [member] = await rows<PasswordCredential & { community_id: string, member_id: string }>(db, query, [username])
   const hash = await passwordHash(password, member?.password_salt ?? unknownSalt)
   if (!member || !timingSafeEqual(hash, member.password_hash)) fail(401, 'incorrect_credentials')
-  return issueSession(db, member.community_id, member.member_id)
+  return transaction(db, async conn => {
+    const actor = { community_id: member.community_id, id: member.member_id, role: 'member' } as const
+    await lockMembership(conn, actor)
+    const [current] = await rows<PasswordCredential>(conn, query + ' FOR UPDATE', [username])
+    if (!current || !timingSafeEqual(hash, current.password_hash)) fail(401, 'incorrect_credentials')
+    return issueSession(conn, member.community_id, member.member_id)
+  })
+}
+
+type PasswordCredential = { password_salt: Buffer, password_hash: Buffer }
+
+export async function verifyCurrentPassword(db: PoolConnection, actor: Actor, password: unknown) {
+  if (!validPassword(password)) fail(400, 'incorrect_current_password')
+  const [member] = await rows<PasswordCredential>(db,
+    'SELECT password_salt,password_hash FROM member_credentials WHERE community_id=? AND member_id=? FOR UPDATE',
+    [actor.community_id, actor.id])
+  if (!member) fail(403, 'member_account_required')
+  const hash = await passwordHash(password, member.password_salt)
+  if (!timingSafeEqual(hash, member.password_hash)) fail(400, 'incorrect_current_password')
 }

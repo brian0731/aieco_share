@@ -2,7 +2,7 @@ import type { PoolConnection } from 'mysql2/promise'
 import { type Actor, audit, boundedText, fail, rows, uuid } from './database'
 import { blockDispute } from './ratings'
 
-type Item = { id: string; owner_id: string; reserved_by: string | null; exchanged: number }
+type Item = { id: string; owner_id: string; reserved_by: string | null; exchanged: number; withdrawn: number }
 export type Exchange = {
   id: string
   offered_id: string
@@ -78,7 +78,7 @@ export async function proposeExchange(db: PoolConnection, actor: Actor, input: I
         retried.wanted_id !== wanted || retried.meeting !== meeting) fail(409, 'exchange_id_conflict')
     return retried
   }
-  for (const item of items.values()) if (item.exchanged || item.reserved_by) fail(409, 'item_unavailable')
+  for (const item of items.values()) if (item.withdrawn || item.exchanged || item.reserved_by) fail(409, 'item_unavailable')
   await db.execute(`INSERT INTO exchanges (community_id,id,offered_id,wanted_id,proposer_id,owner_id,meeting)
     VALUES (?,?,?,?,?,?,?)`, [community,id,offered,wanted,actor.id,owner,meeting])
   await audit(db, actor, 'propose_exchange', id)

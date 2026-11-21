@@ -21,6 +21,7 @@ part 'lifebuoy_districts.dart';
 part 'lifebuoy_exchange.dart';
 part 'lifebuoy_lists.dart';
 part 'lifebuoy_signin.dart';
+part 'lifebuoy_settings.dart';
 
 void main() => runApp(const LifebuoyApp());
 
@@ -112,8 +113,9 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
     super.dispose();
   }
 
+  static final draftPrefix = 'lifebuoy.draft.${Uri.encodeComponent(endpoint)}.';
   String draftKey(String member) =>
-      'lifebuoy.draft.${Uri.encodeComponent(endpoint)}.${account?['community_id']}.$member';
+      '$draftPrefix${account?['community_id']}.$member';
   Json? get account => home?['account'] as Json?;
   List<Json> list(String key) => (home?[key] as List? ?? []).cast<Json>();
 
@@ -155,6 +157,10 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           'insufficient_balance' => '付款方可用時間不足，這筆服務尚未入帳。',
           'invalid_token' || 'token_required' => '登入已失效，請重新登入',
           'incorrect_credentials' => '使用者名稱或密碼錯誤',
+          'incorrect_current_password' => '現有密碼不正確',
+          'member_account_required' => '此功能只適用於會員帳戶',
+          'district_conflict' => '暫時無法轉往此區，請稍後再試',
+          'retry_transaction' => '資料正在更新，請稍後再試',
           'invalid_username' => '使用者名稱須為 3 至 32 個英文字母、數字或底線',
           'invalid_password' => '密碼須至少 12 個字元，且不得超過 256 位元組',
           'invalid_name' => '請輸入顯示名稱（最多 100 個字元）',
@@ -292,8 +298,12 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       activeToken = null;
       rethrow;
     }
-    if (!mounted) return;
-    final member = account!['id'].toString();
+    await restoreDraft();
+  }
+
+  Future<void> restoreDraft() async {
+    final member = account?['id']?.toString();
+    if (!mounted || member == null) return;
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString(draftKey(member));
     if (saved != null && mounted) {
@@ -330,6 +340,50 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
         if (biometricSaved) await forgetBiometricSession();
       } finally {
         await loadPublicBoard();
+      }
+    }
+  }
+
+  Future<void> openUserSettings() async {
+    final member = account;
+    if (member == null) return;
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => _UserSettingsPage(account: member, api: api),
+      ),
+    );
+    if (!mounted || result == null) return;
+    if (result == 'profile') {
+      await run(() async {
+        final oldDistrict = account?['community_id'];
+        await refresh();
+        if (mounted && oldDistrict != account?['community_id']) {
+          setState(() {
+            draft = null;
+            kind = 'request';
+            title.clear();
+            area.clear();
+            duration.text = '30';
+          });
+          await restoreDraft();
+        }
+      });
+      return;
+    }
+    clearSession();
+    if (biometricSaved) await discardInvalidBiometricSession();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result == 'delete' ? '帳戶已刪除' : '密碼已更新，請重新登入')),
+    );
+    await loadPublicBoard();
+    if (result == 'delete') {
+      final prefs = await SharedPreferences.getInstance();
+      final suffix = '.${member['id']}';
+      for (final key in prefs.getKeys()) {
+        if (key.startsWith(draftPrefix) && key.endsWith(suffix)) {
+          await prefs.remove(key);
+        }
       }
     }
   }
@@ -407,10 +461,11 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           )
         else
           PopupMenuButton<String>(
-            tooltip: '帳戶設定',
+            tooltip: '用戶設定',
             icon: const Icon(Icons.manage_accounts_outlined),
             enabled: !busy,
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'settings', child: Text('用戶設定')),
               if (biometricPlatform)
                 PopupMenuItem(
                   value: biometricSaved ? 'disable' : 'enable',
@@ -420,15 +475,17 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
                 const PopupMenuItem(value: 'lock', child: Text('鎖定帳戶')),
               const PopupMenuItem(value: 'logout', child: Text('登出')),
             ],
-            onSelected: (action) => run(switch (action) {
-              'enable' => enableBiometricSession,
-              'disable' => forgetBiometricSession,
-              'lock' => () async {
-                clearSession();
-                await loadPublicBoard();
-              },
-              _ => signout,
-            }),
+            onSelected: (action) => action == 'settings'
+                ? openUserSettings()
+                : run(switch (action) {
+                    'enable' => enableBiometricSession,
+                    'disable' => forgetBiometricSession,
+                    'lock' => () async {
+                      clearSession();
+                      await loadPublicBoard();
+                    },
+                    _ => signout,
+                  }),
           ),
       ],
     ),
@@ -451,7 +508,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
                 feed(),
                 timeBank(),
                 exchangeBoard(),
-                const LifebuoyChat(),
+                LifebuoyChat(active: tab == 3),
               ],
             ),
           ),

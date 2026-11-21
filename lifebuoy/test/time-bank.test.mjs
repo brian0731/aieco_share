@@ -56,7 +56,7 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
   ]) {
     const token = randomBytes(32).toString('base64url')
     tokens.set(id, token)
-    await db.execute('INSERT INTO members VALUES (?,?,?,?,?,?)',
+    await db.execute('INSERT INTO members (community_id,id,name,role,balance,token_hash) VALUES (?,?,?,?,?,?)',
       [tenant, id, id, role, balance, createHash('sha256').update(token).digest()])
   }
   async function request(actor, path, body, status = 200) {

@@ -625,7 +625,11 @@ class LocalizedText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final language = _AppLanguageScope.of(context).language;
+    final language =
+        context
+            .dependOnInheritedWidgetOfExactType<_AppLanguageScope>()
+            ?.language ??
+        AppLanguage.traditionalChinese;
     final span = textSpan;
     if (span != null) {
       return material.Text.rich(
@@ -16231,6 +16235,13 @@ class MeshChatService extends ChangeNotifier {
       );
     }
 
+    // Confirm accepted chat even when a retransmission was already displayed.
+    final receipt = fromOnline
+        ? RelayNetworkBridge.chatReceiptFor(packet)
+        : null;
+    if (receipt != null) {
+      unawaited(_sendPacketToOnline(receipt));
+    }
     if (!_seenMessageIds.add(messageId)) {
       return;
     }

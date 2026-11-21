@@ -9,7 +9,7 @@ async function adminMemberDistricts(db: Db, actor: Actor) {
   const ids = memberDistrictIds(actor)
   const districts = await rows<{ id: string, name: string, count: number }>(db, `
     SELECT c.id,c.name,COUNT(m.id) AS count
-    FROM communities c LEFT JOIN members m ON m.community_id=c.id
+    FROM communities c LEFT JOIN members m ON m.community_id=c.id AND m.account_state='active'
     WHERE c.id IN (${ids.map(() => '?').join(',')})
     GROUP BY c.id,c.name`, ids)
   const byId = new Map(districts.map(district => [district.id, district]))
@@ -34,16 +34,18 @@ export async function adminMemberPage(db: Db, actor: Actor, input: Record<string
   const words = search.toLowerCase().trim().split(/\s+/).filter(Boolean)
   const conditions = [
     `m.community_id IN (${scope.map(() => '?').join(',')})`,
+    "m.account_state='active'",
     ...words.map(() => "LOCATE(?, LOWER(CONCAT_WS(' ', m.name, mc.username, c.name))) > 0"),
   ]
   const from = `FROM members m JOIN communities c ON c.id=m.community_id
+    JOIN members original ON original.community_id=COALESCE(m.origin_community_id,m.community_id) AND original.id=m.id
     LEFT JOIN member_credentials mc ON (mc.community_id,mc.member_id)=(m.community_id,m.id)
     WHERE ${conditions.join(' AND ')}`
   const params = [...scope, ...words]
   const [total] = await rows<{ count: number }>(db, `SELECT COUNT(*) AS count ${from}`, params)
   const count = Number(total.count)
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(count / pageSize)))
-  const members = await rows(db, `SELECT m.id,m.name,m.role,m.balance,c.name AS district,mc.username ${from}
+  const members = await rows(db, `SELECT m.id,m.name,m.role,original.balance,c.name AS district,mc.username ${from}
     ORDER BY m.name,m.community_id,m.id LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize])
   return { members, total: count, page }
 }
@@ -52,7 +54,9 @@ export async function adminDashboard(db: Db, actor: Actor) {
   const scope = [actor.community_id]
   const [[community], members, services, ledger, items, exchanges, disputes, audit, districts] = await Promise.all([
     rows<{ name: string }>(db, 'SELECT name FROM communities WHERE id=?', scope),
-    rows(db, 'SELECT id,name,role,balance FROM members WHERE community_id=? ORDER BY name,id LIMIT 100', scope),
+    rows(db, `SELECT m.id,m.name,m.role,original.balance FROM members m
+      JOIN members original ON original.community_id=COALESCE(m.origin_community_id,m.community_id) AND original.id=m.id
+      WHERE m.community_id=? AND m.account_state='active' ORDER BY m.name,m.id LIMIT 100`, scope),
     rows(db, `SELECT s.*,p.title,p.area,p.created_at,payer.name AS payer_name,provider.name AS provider_name
       FROM services s JOIN help_posts p ON (p.community_id,p.id)=(s.community_id,s.post_id)
       JOIN members payer ON (payer.community_id,payer.id)=(s.community_id,s.payer_id)

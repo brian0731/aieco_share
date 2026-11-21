@@ -80,7 +80,8 @@ export async function memberReputations(db: Db, community: string, id?: string) 
     id: string; name: string; count: number | string; score: number | string | null; completed_count: number | string
   }>(db, `
     WITH listed AS (
-      SELECT id,name FROM members WHERE community_id=? ${id === undefined ? '' : 'AND id=?'}
+      SELECT id,name FROM members WHERE community_id=?
+      ${id === undefined ? "AND account_state='active'" : 'AND id=?'}
       ORDER BY name,id LIMIT 100
     ), trades AS (
       SELECT id,'service' AS kind,completed_at,payer_id AS first_id,provider_id AS second_id
