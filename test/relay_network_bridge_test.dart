@@ -146,8 +146,11 @@ void main() {
     'one participant joins all users on both relays, including rooms',
     () => HttpOverrides.runWithHttpOverrides(() async {
       SharedPreferences.setMockInitialValues({});
-      final a = await _Relay.start();
-      final b = await _Relay.start();
+      final a = await _Relay.start(
+        addRelayMetadata: true,
+        dropFirstBridgedChat: true,
+      );
+      final b = await _Relay.start(dropFirstBridgedChat: true);
       final directory = NetworkDirectoryServer({
         '582193': a.url,
         '704826': b.url,
@@ -211,6 +214,37 @@ void main() {
               node.messages.any((m) => m.text == 'Hello from B'),
         ),
       );
+      expect(a.droppedMessages, contains('Hello from B'));
+      expect(b.droppedMessages, contains('Hello from A'));
+      await Future.wait([
+        for (final node in [nodes[1], nodes[3]])
+          (() async {
+            final side = identical(node, nodes[1]) ? 'A' : 'B';
+            for (var i = 0; i < 12; i++) {
+              expect(await node.sendMessage('Burst $side $i'), isTrue);
+            }
+          })(),
+      ]);
+      await _until(
+        () => nodes.every(
+          (node) =>
+              node.messages
+                  .where((message) => message.text.startsWith('Burst '))
+                  .length ==
+              24,
+        ),
+      );
+      for (final side in ['A', 'B']) {
+        for (var i = 0; i < 12; i++) {
+          final text = 'Burst $side $i';
+          for (final node in nodes) {
+            expect(
+              node.messages.where((message) => message.text == text),
+              hasLength(1),
+            );
+          }
+        }
+      }
       expect(nodes[3].createRoom('Connected team'), isTrue);
       final roomId = nodes[3].activeRoom.id;
       await _until(() => nodes[1].rooms.any((room) => room.id == roomId));
@@ -297,6 +331,90 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(received, hasLength(count));
+    },
+  );
+
+  test(
+    'chat sent once is forwarded after a delayed handshake or reconnect',
+    () async {
+      final a = await _Relay.start();
+      final b = await _Relay.start();
+      var allowDestination = Completer<void>();
+      var destinationAttempts = 0;
+      final bridge = RelayNetworkBridge(
+        localRelayUrl: a.url,
+        retryDelay: const Duration(milliseconds: 30),
+        connect: (url) async {
+          if (url == b.url) {
+            destinationAttempts++;
+            await allowDestination.future;
+          }
+          return WebSocket.connect(url);
+        },
+      );
+      final sender = await WebSocket.connect(a.url);
+      final receiver = await WebSocket.connect(b.url);
+      final receivedIds = <String>[];
+      sender.listen((_) {});
+      receiver.listen((data) {
+        final packet = jsonDecode(data as String) as Map<String, dynamic>;
+        final receipt = RelayNetworkBridge.chatReceiptFor(packet);
+        if (receipt == null) return;
+        receiver.add(jsonEncode(receipt));
+        receivedIds.add(packet['messageId'] as String);
+      });
+      addTearDown(() async {
+        bridge.dispose();
+        if (!allowDestination.isCompleted) allowDestination.complete();
+        await sender.close();
+        await receiver.close();
+        await a.close();
+        await b.close();
+      });
+
+      void send(String id, {int hops = 0}) => sender.add(
+        jsonEncode({
+          'kind': 'aieco.light.chat.v1',
+          'senderId': 'user-a',
+          'messageId': id,
+          'text': '跨網聊天',
+          'hops': hops,
+        }),
+      );
+
+      await _until(() => b.clients.length == 1);
+      final receiverAtRelay = b.clients.single;
+      final joining = bridge.join(b.url);
+      await _until(() => a.clients.length == 2 && destinationAttempts == 1);
+      send('during-handshake');
+      // Let the active socket process the packet while the destination is gated.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(receivedIds, isEmpty);
+      allowDestination.complete();
+      await joining;
+      await _until(() => receivedIds.contains('during-handshake'));
+      await _until(() => b.receipts > 0);
+
+      allowDestination = Completer<void>();
+      final bridgeAtRelay = b.clients.singleWhere(
+        (socket) => !identical(socket, receiverAtRelay),
+      );
+      await bridgeAtRelay.close();
+      await _until(() => !bridge.connected && destinationAttempts == 2);
+      send('during-reconnect');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(receivedIds, ['during-handshake']);
+      allowDestination.complete();
+      await _until(() => receivedIds.contains('during-reconnect'));
+
+      send('during-reconnect', hops: 1); // A peer's history replay.
+      send('after-reconnect');
+      await _until(() => receivedIds.contains('after-reconnect'));
+      expect(receivedIds, [
+        'during-handshake',
+        'during-reconnect',
+        'after-reconnect',
+      ]);
     },
   );
 
@@ -493,23 +611,39 @@ Future<void> _until(
 class _RealHttpOverrides extends HttpOverrides {}
 
 class _Relay {
-  _Relay(this.server, {required bool addRelayMetadata}) {
+  _Relay(
+    this.server, {
+    required bool addRelayMetadata,
+    required bool dropFirstBridgedChat,
+  }) {
     server.listen((request) async {
       final socket = await WebSocketTransformer.upgrade(request);
       clients.add(socket);
       socket.listen(
         (data) {
-          if (addRelayMetadata && data is String) {
+          if ((addRelayMetadata || dropFirstBridgedChat) && data is String) {
             final packet = jsonDecode(data) as Map<String, dynamic>;
+            if (dropFirstBridgedChat &&
+                packet['kind'] == 'aieco.light.chat.v1' &&
+                packet['_lightBridgePath'] != null &&
+                droppedIds.add(packet['messageId'] as String)) {
+              droppedMessages.add(packet['text'] as String);
+              return;
+            }
             if (packet.containsKey('relayReceivedAt') ||
                 packet.containsKey('relaySourcePeerId')) {
               return;
             }
-            data = jsonEncode({
-              ...packet,
-              'relayReceivedAt': DateTime.now().toIso8601String(),
-              'relaySourcePeerId': socket.hashCode.toString(),
-            });
+            if (addRelayMetadata)
+              data = jsonEncode({
+                ...packet,
+                'relayReceivedAt': DateTime.now().toIso8601String(),
+                'relaySourcePeerId': socket.hashCode.toString(),
+              });
+          }
+          if (data is String &&
+              data.contains('aieco.light.chat.bridge-ack.v1')) {
+            receipts++;
           }
           packets++;
           for (final client in clients.toList()) {
@@ -523,11 +657,18 @@ class _Relay {
   }
   final HttpServer server;
   final Set<WebSocket> clients = {};
+  final droppedIds = <String>{};
+  final droppedMessages = <String>{};
   int packets = 0;
+  int receipts = 0;
   String get url => 'ws://127.0.0.1:${server.port}/ws/light';
-  static Future<_Relay> start({bool addRelayMetadata = false}) async => _Relay(
+  static Future<_Relay> start({
+    bool addRelayMetadata = false,
+    bool dropFirstBridgedChat = false,
+  }) async => _Relay(
     await HttpServer.bind(InternetAddress.loopbackIPv4, 0),
     addRelayMetadata: addRelayMetadata,
+    dropFirstBridgedChat: dropFirstBridgedChat,
   );
   Future<void> close() async {
     for (final socket in clients.toList()) {

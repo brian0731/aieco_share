@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import 'lifebuoy_chat_connection.dart';
 import 'lifebuoy_illustration.dart';
 import 'lifebuoy_search.dart';
-import 'lightmesh.dart'
-    show MeshChatService, MeshMessageBubble, MeshNetworkMode;
+import 'lightmesh.dart' show MeshChatService, MeshMessageBubble;
 
 class LifebuoyChat extends StatefulWidget {
-  const LifebuoyChat({super.key});
+  const LifebuoyChat({super.key, required this.active});
+
+  final bool active;
 
   @override
   State<LifebuoyChat> createState() => _LifebuoyChatState();
@@ -37,10 +38,28 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   final search = TextEditingController();
   bool busy = false;
 
-  Future<void> joinPublicRoom() => operate(() async {
-    await mesh.setNetworkMode(MeshNetworkMode.online);
-    await mesh.start();
-  });
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) joinPublicRoom();
+  }
+
+  @override
+  void didUpdateWidget(LifebuoyChat oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) joinPublicRoom();
+  }
+
+  void joinPublicRoom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          widget.active &&
+          mesh.onlineConfigured &&
+          !mesh.onlineConnected) {
+        unawaited(mesh.refreshNetworkPresence());
+      }
+    });
+  }
 
   Future<void> operate(Future<void> Function() task) async {
     setState(() => busy = true);
@@ -77,10 +96,6 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
     builder: (context, _) {
       final room = mesh.activeRoom;
       final messages = mesh.activeRoomMessages;
-      final buttonStyle = FilledButton.styleFrom(
-        minimumSize: const Size(0, 48),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-      );
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -94,43 +109,18 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                 ),
                 const SizedBox(height: 8),
               ],
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: busy || !mesh.onlineConfigured
-                          ? null
-                          : joinPublicRoom,
-                      style: buttonStyle,
-                      icon: const Icon(Icons.public, size: 18),
-                      label: const Text(
-                        '公開房間',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: busy || !mesh.onlineConfigured
-                          ? null
-                          : showNetworkConnection,
-                      style: buttonStyle,
-                      icon: Icon(
-                        mesh.networkBridge.connected
-                            ? Icons.link
-                            : Icons.hub_outlined,
-                        size: 18,
-                      ),
-                      label: const Text(
-                        '連接光網',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                ],
+              FilledButton.tonalIcon(
+                onPressed: busy || !mesh.onlineConfigured
+                    ? null
+                    : showNetworkConnection,
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+                icon: Icon(
+                  mesh.networkBridge.connected
+                      ? Icons.link
+                      : Icons.hub_outlined,
+                  size: 18,
+                ),
+                label: const Text('連接光網'),
               ),
               if (!mesh.onlineConfigured)
                 const Text('尚未設定光網公開房間', textAlign: TextAlign.center)

@@ -34,28 +34,43 @@ void main() {
       await tester.pumpAndSettle();
 
       final banner = find.byType(LifebuoyIllustration);
-      expect(banner, findsOneWidget);
-      expect(tester.widget<LifebuoyIllustration>(banner).scene, value);
-      expect(tester.getSize(banner).width, greaterThan(250));
+      if (key != '光網聊天') {
+        expect(banner, findsOneWidget);
+        expect(tester.widget<LifebuoyIllustration>(banner).scene, value);
+        expect(tester.getSize(banner).width, greaterThan(250));
+      }
       final asset = await tester.runAsync(
         () => rootBundle.load('assets/images/lifebuoy/$value.webp'),
       );
       expect(asset?.lengthInBytes, greaterThan(10000));
-      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      expect(
+        find.byType(TextField).hitTestable(),
+        findsNWidgets(key == '光網聊天' ? 2 : 1),
+      );
       expect(
         find.byType(LifebuoyLightMeshBanner),
         key == '社區互助' ? findsOneWidget : findsNothing,
       );
       if (key == '光網聊天') {
-        final publicRoom = tester.getRect(find.text('公開房間'));
         final connection = find.text('連接光網');
         final interconnect = tester.getRect(connection);
         expect(find.text('LAN 聊天'), findsNothing);
-        expect(publicRoom.center.dy, closeTo(interconnect.center.dy, 1));
-        expect(publicRoom.right, lessThan(interconnect.left));
+        expect(find.widgetWithText(FilledButton, '公開房間'), findsNothing);
         expect(interconnect.right, lessThanOrEqualTo(320));
         expect(find.text('傳播頻道'), findsOneWidget);
+        expect(find.text('傳送到 傳播頻道'), findsOneWidget);
         expect(connection.hitTestable(), findsOneWidget);
+
+        final composer = find.byWidgetPredicate(
+          (widget) =>
+              widget is TextField && widget.decoration?.hintText == '傳送到 傳播頻道',
+        );
+        await tester.enterText(composer, '保留聊天室草稿');
+        await tester.tap(find.text('交換').hitTestable());
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('光網聊天').hitTestable());
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(composer).controller?.text, '保留聊天室草稿');
       }
       expect(tester.takeException(), isNull);
     }

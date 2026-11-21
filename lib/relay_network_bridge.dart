@@ -14,6 +14,7 @@ class RelayNetworkBridge extends ChangeNotifier {
     this.onConnected,
     this.forwardPacket,
     this.retryDelay = const Duration(seconds: 5),
+    this.chatReceiptTimeout = const Duration(seconds: 1),
     Future<WebSocket> Function(String)? connect,
   }) : _connect = connect ?? WebSocket.connect;
 
@@ -21,6 +22,7 @@ class RelayNetworkBridge extends ChangeNotifier {
   final VoidCallback? onConnected;
   final bool Function(Map<String, dynamic>)? forwardPacket;
   final Duration retryDelay;
+  final Duration chatReceiptTimeout;
   final Future<WebSocket> Function(String) _connect;
   final String _id =
       'bridge-${DateTime.now().microsecondsSinceEpoch}-'
@@ -29,14 +31,25 @@ class RelayNetworkBridge extends ChangeNotifier {
   final List<bool> _connecting = [false, false];
   final List<Timer?> _retries = [null, null];
   final LinkedHashMap<String, DateTime> _seen = LinkedHashMap();
+  final _pendingChat = <LinkedHashMap<String, _PendingBridgedChat>>[
+    LinkedHashMap(),
+    LinkedHashMap(),
+  ];
+  final List<Timer?> _chatRetries = [null, null];
   static const _pathKey = '_lightBridgePath';
+  static const _receiptKey = '_lightBridgeReceipt';
+  static const _receiptKind = 'aieco.light.chat.bridge-ack.v1';
   static const _maxBytes = 64 * 1024;
   static const _maxHops = 8;
   static const _maxSeen = 1024;
+  static const _maxPendingChat = 64;
+  static const _maxChatAttempts = 4;
+  static const _chatKind = 'aieco.light.chat.v1';
+  static const _retention = Duration(minutes: 2);
   static const _kinds = {
     'aieco.light.hello.v1',
     'aieco.light.bye.v1',
-    'aieco.light.chat.v1',
+    _chatKind,
     'aieco.light.room.v1',
     'aieco.light.location.v1',
     'aieco.light.activity.v1',
@@ -58,6 +71,38 @@ class RelayNetworkBridge extends ChangeNotifier {
   String? get remoteRelayUrl => _remoteRelayUrl;
   String? get error => _error;
   String get connectionCode => codeFor(localRelayUrl);
+
+  /// Written to the same relay by an app that accepted a bridged chat.
+  static Map<String, Object?>? chatReceiptFor(Map<String, dynamic> packet) {
+    final bridgeId = packet[_receiptKey];
+    final path = packet[_pathKey];
+    if (bridgeId is! String ||
+        !bridgeId.startsWith('bridge-') ||
+        bridgeId.length > 80 ||
+        path is! List ||
+        path.isEmpty ||
+        path.last != bridgeId ||
+        _chatSignature(packet) == null) {
+      return null;
+    }
+    return {
+      'kind': _receiptKind,
+      _receiptKey: bridgeId,
+      'senderId': packet['senderId'],
+      'messageId': packet['messageId'],
+    };
+  }
+
+  static String? _chatSignature(Map<String, dynamic> packet) {
+    final senderId = packet['senderId'];
+    final messageId = packet['messageId'];
+    if (senderId is! String ||
+        senderId.isEmpty ||
+        messageId is! String ||
+        messageId.isEmpty)
+      return null;
+    return jsonEncode([_chatKind, senderId, messageId]);
+  }
 
   static String codeFor(String relayUrl) => Uri(
     scheme: 'lightmesh',
@@ -125,12 +170,21 @@ class RelayNetworkBridge extends ChangeNotifier {
       _sockets[side] = socket;
       socket.pingInterval = const Duration(seconds: 20);
       socket.listen(
-        (data) => _receive(side, data),
+        (data) {
+          if (_current(generation) && identical(_sockets[side], socket)) {
+            _receive(side, data);
+          }
+        },
         onDone: () => _lost(side, socket, url, generation),
         onError: (Object _) => _lost(side, socket, url, generation),
         cancelOnError: true,
       );
-      _error = null;
+      // Unconfirmed writes on a lost socket can be resent on the new one.
+      for (final packet in _pendingChat[side].values) {
+        packet.nextAttempt = DateTime.now();
+      }
+      _flushPendingChat(side);
+      if (connected) _error = null;
       notifyListeners();
       if (connected) onConnected?.call();
     } on Object {
@@ -156,6 +210,8 @@ class RelayNetworkBridge extends ChangeNotifier {
   void _lost(int side, WebSocket socket, String url, int generation) {
     if (!_current(generation) || !identical(_sockets[side], socket)) return;
     _sockets[side] = null;
+    _chatRetries[side]?.cancel();
+    _chatRetries[side] = null;
     unawaited(socket.close());
     _error = '光網連接中斷，正在自動重試。';
     _retry(side, url, generation);
@@ -171,7 +227,6 @@ class RelayNetworkBridge extends ChangeNotifier {
   }
 
   void _receive(int side, Object? data) {
-    if (!connected) return;
     try {
       final String text;
       if (data is String) {
@@ -184,10 +239,19 @@ class RelayNetworkBridge extends ChangeNotifier {
       }
       if (utf8.encode(text).length > _maxBytes) return;
       final decoded = jsonDecode(text);
-      if (decoded is! Map<String, dynamic> ||
-          !_kinds.contains(decoded['kind'])) {
+      if (decoded is! Map<String, dynamic>) return;
+      if (decoded['kind'] == _receiptKind) {
+        final signature = _chatSignature(decoded);
+        if (decoded[_receiptKey] == _id && signature != null) {
+          final pending = _pendingChat[side][signature];
+          if (pending != null && pending.attempts > 0) {
+            _pendingChat[side].remove(signature);
+            _rememberForwarded(signature, DateTime.now());
+          }
+        }
         return;
       }
+      if (!_kinds.contains(decoded['kind'])) return;
       if (forwardPacket?.call(decoded) == false) return;
       // Older relays stamp both fields and reject packets carrying either one.
       decoded.remove('relayReceivedAt');
@@ -200,24 +264,115 @@ class RelayNetworkBridge extends ChangeNotifier {
       final path = rawPath is List ? rawPath.cast<String>() : <String>[];
       if (path.contains(_id) || path.length >= _maxHops) return;
 
-      // Canonical JSON also catches echoes from relays that reorder object keys.
-      final signature = jsonEncode(_canonical(decoded));
+      final isChat = decoded['kind'] == _chatKind;
+      if (!isChat && !connected) return;
+
+      // A history replay can change hops without changing the chat message.
+      final chatSignature = isChat ? _chatSignature(decoded) : null;
+      final signature = chatSignature ?? jsonEncode(_canonical(decoded));
       final now = DateTime.now();
       while (_seen.isNotEmpty &&
-          now.difference(_seen.values.first) > const Duration(minutes: 2)) {
+          now.difference(_seen.values.first) > _retention) {
         _seen.remove(_seen.keys.first);
       }
-      if (_seen.containsKey(signature)) return;
-      _seen[signature] = now;
-      while (_seen.length > _maxSeen) {
-        _seen.remove(_seen.keys.first);
+      final destination = 1 - side;
+      for (final queue in _pendingChat) {
+        queue.removeWhere(
+          (_, packet) => now.difference(packet.receivedAt) > _retention,
+        );
       }
+      if (_seen.containsKey(signature) ||
+          _pendingChat.any((queue) => queue.containsKey(signature)))
+        return;
+
       decoded[_pathKey] = [...path, _id];
+      if (isChat) {
+        decoded.remove(_receiptKey);
+        if (chatSignature != null) decoded[_receiptKey] = _id;
+      }
       final outgoing = jsonEncode(decoded);
       if (utf8.encode(outgoing).length > _maxBytes) return;
-      _sockets[1 - side]!.add(outgoing);
+
+      if (isChat) {
+        final queue = _pendingChat[destination];
+        queue[signature] = _PendingBridgedChat(
+          outgoing,
+          now,
+          requiresReceipt: chatSignature != null,
+        );
+        while (queue.length > _maxPendingChat) {
+          queue.remove(queue.keys.first);
+        }
+        _flushPendingChat(destination);
+      } else if (_send(destination, outgoing)) {
+        _rememberForwarded(signature, now);
+      }
     } on Object {
       // Invalid packets never take down a network bridge.
+    }
+  }
+
+  void _flushPendingChat(int destination) {
+    _chatRetries[destination]?.cancel();
+    _chatRetries[destination] = null;
+    if (_sockets[destination]?.readyState != WebSocket.open) return;
+    final queue = _pendingChat[destination];
+    final now = DateTime.now();
+    DateTime? nextAttempt;
+    for (final entry in queue.entries.toList()) {
+      final packet = entry.value;
+      if (now.difference(packet.receivedAt) > _retention) {
+        queue.remove(entry.key);
+        continue;
+      }
+      if (!packet.nextAttempt.isAfter(now)) {
+        if (packet.attempts >= _maxChatAttempts) {
+          _rememberForwarded(entry.key, now);
+          queue.remove(entry.key);
+          continue;
+        }
+        if (!_send(destination, packet.text)) return;
+        if (!packet.requiresReceipt) {
+          _rememberForwarded(entry.key, now);
+          queue.remove(entry.key);
+          continue;
+        }
+        packet.nextAttempt = now.add(
+          chatReceiptTimeout * (1 << packet.attempts),
+        );
+        packet.attempts++;
+      }
+      if (nextAttempt == null || packet.nextAttempt.isBefore(nextAttempt)) {
+        nextAttempt = packet.nextAttempt;
+      }
+    }
+    if (nextAttempt != null) {
+      _chatRetries[destination] = Timer(
+        nextAttempt.difference(DateTime.now()),
+        () => _flushPendingChat(destination),
+      );
+    }
+  }
+
+  bool _send(int destination, String text) {
+    final socket = _sockets[destination];
+    if (socket == null || socket.readyState != WebSocket.open) return false;
+    try {
+      socket.add(text);
+      return true;
+    } on Object {
+      final url = destination == 0
+          ? normalizeRelayUrl(localRelayUrl)
+          : _remoteRelayUrl!;
+      _lost(destination, socket, url, _generation);
+      return false;
+    }
+  }
+
+  void _rememberForwarded(String signature, DateTime now) {
+    _seen[signature] = now;
+    while (_seen.length > _maxSeen) {
+      _seen.remove(_seen.keys.first);
     }
   }
 
@@ -240,9 +395,12 @@ class RelayNetworkBridge extends ChangeNotifier {
     for (var side = 0; side < 2; side++) {
       _retries[side]?.cancel();
       _retries[side] = null;
+      _chatRetries[side]?.cancel();
+      _chatRetries[side] = null;
       final socket = _sockets[side];
       _sockets[side] = null;
       _connecting[side] = false;
+      _pendingChat[side].clear();
       if (socket != null) unawaited(socket.close());
     }
     _seen.clear();
@@ -255,4 +413,18 @@ class RelayNetworkBridge extends ChangeNotifier {
     disconnect();
     super.dispose();
   }
+}
+
+class _PendingBridgedChat {
+  _PendingBridgedChat(
+    this.text,
+    this.receivedAt, {
+    required this.requiresReceipt,
+  }) : nextAttempt = receivedAt;
+
+  final String text;
+  final DateTime receivedAt;
+  final bool requiresReceipt;
+  DateTime nextAttempt;
+  int attempts = 0;
 }
