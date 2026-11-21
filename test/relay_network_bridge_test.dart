@@ -12,7 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../tool/network_directory_server.dart';
 
 void main() {
-  testWidgets('Lifebuoy shows its own code and pre-fills the LightMesh code', (
+  testWidgets('Lifebuoy shows its own code and leaves the other code blank', (
     tester,
   ) async {
     final mesh = MeshChatService(
@@ -22,12 +22,17 @@ void main() {
     );
     addTearDown(mesh.dispose);
     await tester.pumpWidget(
-      MaterialApp(home: LifebuoyChatConnection(mesh: mesh)),
+      MaterialApp(
+        home: LifebuoyChatConnection(
+          mesh: mesh,
+          directoryUrl: 'https://lifebuoy.example.test/api/lightmesh',
+        ),
+      ),
     );
     expect(find.text('704826'), findsOneWidget);
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      '582193',
+      isEmpty,
     );
     await tester.enterText(find.byType(TextField), '704826');
     await tester.tap(find.text('接通另一個 APP'));
@@ -40,7 +45,7 @@ void main() {
     'Lifebuoy connects to 582193 and bridges only the public room',
     () => HttpOverrides.runWithHttpOverrides(() async {
       SharedPreferences.setMockInitialValues({});
-      final lightMesh = await _Relay.start();
+      final lightMesh = await _Relay.start(addRelayMetadata: true);
       final lifebuoy = await _Relay.start();
       final directory = NetworkDirectoryServer({
         '582193': lightMesh.url,
@@ -488,12 +493,24 @@ Future<void> _until(
 class _RealHttpOverrides extends HttpOverrides {}
 
 class _Relay {
-  _Relay(this.server) {
+  _Relay(this.server, {required bool addRelayMetadata}) {
     server.listen((request) async {
       final socket = await WebSocketTransformer.upgrade(request);
       clients.add(socket);
       socket.listen(
         (data) {
+          if (addRelayMetadata && data is String) {
+            final packet = jsonDecode(data) as Map<String, dynamic>;
+            if (packet.containsKey('relayReceivedAt') ||
+                packet.containsKey('relaySourcePeerId')) {
+              return;
+            }
+            data = jsonEncode({
+              ...packet,
+              'relayReceivedAt': DateTime.now().toIso8601String(),
+              'relaySourcePeerId': socket.hashCode.toString(),
+            });
+          }
           packets++;
           for (final client in clients.toList()) {
             if (client.readyState == WebSocket.open) client.add(data);
@@ -508,8 +525,10 @@ class _Relay {
   final Set<WebSocket> clients = {};
   int packets = 0;
   String get url => 'ws://127.0.0.1:${server.port}/ws/light';
-  static Future<_Relay> start() async =>
-      _Relay(await HttpServer.bind(InternetAddress.loopbackIPv4, 0));
+  static Future<_Relay> start({bool addRelayMetadata = false}) async => _Relay(
+    await HttpServer.bind(InternetAddress.loopbackIPv4, 0),
+    addRelayMetadata: addRelayMetadata,
+  );
   Future<void> close() async {
     for (final socket in clients.toList()) {
       await socket.close();

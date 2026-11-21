@@ -4,7 +4,7 @@ import { changeExchange, proposeExchange, publishItem } from '../../utils/exchan
 import { changeRating, memberReputations, reputation } from '../../utils/ratings'
 import { loginMember, loginRateLimit, registerMember } from '../../utils/member-auth'
 import { hongKongDistrictIds } from '../../utils/districts'
-import { adminDashboard } from '../../utils/admin-dashboard'
+import { adminDashboard, adminMemberPage } from '../../utils/admin-dashboard'
 
 async function publicBoard(db: Db, communities: readonly string[]) {
   const districtParameters = communities.map(() => '?').join(',')
@@ -47,8 +47,9 @@ export default defineEventHandler(async (event) => {
   if (event.method === 'GET' && resource === 'members' && id && !action) {
     return reputation(db, actor, boundedText(id, 36, 'invalid_member'))
   }
-  if (event.method === 'GET' && !id && resource === 'admin') {
+  if (event.method === 'GET' && resource === 'admin' && !action && (!id || id === 'members')) {
     if (actor.role !== 'admin') fail(403, 'admin_required')
+    if (id === 'members') return adminMemberPage(db, actor, getQuery(event))
     return adminDashboard(db, actor)
   }
   if (event.method === 'GET' && !id && resource === 'home') {

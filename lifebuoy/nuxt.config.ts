@@ -5,4 +5,8 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
   icon: { serverBundle: { collections: ['lucide'] } },
   runtimeConfig: { databaseUrl: '' },
+  nitro: {
+    preset: 'node-server',
+    experimental: { websocket: true },
+  },
 })

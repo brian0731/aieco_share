@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { DropdownMenuItem, NavigationMenuItem, TableColumn } from '@nuxt/ui'
-import { displayValue, sections, statusKey, type AdminDashboard, type AdminRow, type SectionKey } from './utils/admin-display'
+import { displayValue, sections, statusKey, type AdminDashboard, type AdminMemberPage, type AdminRow, type SectionKey } from './utils/admin-display'
 
 type Action = { label: string, subject: string, path: string, body: Record<string, string>, needsReason?: boolean }
 type View = SectionKey | 'overview'
+const sessionKey = 'lifebuoy.admin.session'
 const token = ref('')
 const dashboard = ref<AdminDashboard>()
+const restoringSession = ref(true)
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -13,6 +15,10 @@ const view = ref<View>('overview')
 const sidebarOpen = ref(false)
 const query = ref('')
 const page = ref(1)
+const district = ref('all')
+const memberPage = ref<AdminMemberPage>()
+const membersLoading = ref(false)
+const membersError = ref('')
 const pendingAction = ref<Action>()
 const actionOpen = ref(false)
 const reason = ref('')
@@ -22,6 +28,12 @@ const pageSize = 10
 const keys = Object.keys(sections) as SectionKey[]
 const section = computed(() => view.value === 'overview' ? null : view.value)
 const title = computed(() => section.value ? sections[section.value].label : '總覽')
+const districtOptions = computed(() => [
+  { value: 'all', label: '全部地區' },
+  ...(dashboard.value?.districts ?? []).map(({ id, name, count }) => ({
+    value: id, label: `${name}（${count}）`,
+  })),
+])
 
 function navigate(next: View) {
   view.value = next
@@ -49,14 +61,17 @@ const columns = computed<TableColumn<AdminRow>[]>(() => {
 
 const results = computed(() => {
   const key = section.value
-  if (!key || !dashboard.value) return []
+  if (!key || key === 'members' || !dashboard.value) return []
   const words = query.value.toLowerCase().trim().split(/\s+/).filter(Boolean)
   return dashboard.value[key].filter((row) => {
     const text = sections[key].columns.map(([field]) => displayValue(key, row, field)).join(' ').toLowerCase()
     return words.every(word => text.includes(word))
   })
 })
-const visibleRows = computed(() => results.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const visibleRows = computed(() => section.value === 'members'
+  ? memberPage.value?.members ?? []
+  : results.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const resultsTotal = computed(() => section.value === 'members' ? memberPage.value?.total ?? 0 : results.value.length)
 const openDisputes = computed(() => dashboard.value?.disputes.filter(row => !row.outcome) ?? [])
 const summary = computed(() => {
   const data = dashboard.value
@@ -65,21 +80,57 @@ const summary = computed(() => {
     { title: '待處理申訴', amount: openDisputes.value.length, icon: sections.disputes.icon, to: 'disputes' },
     { title: '進行中服務', amount: data.services.filter(row => ['agreement', 'pending'].includes(String(row.state))).length, icon: sections.services.icon, to: 'services' },
     { title: '保留中交收', amount: data.exchanges.filter(row => statusKey('exchanges', row) === 'reserved').length, icon: sections.exchanges.icon, to: 'exchanges' },
-    { title: '成員', amount: data.members.length, icon: sections.members.icon, to: 'members' },
+    { title: '成員', amount: data.districts.reduce((total, entry) => total + entry.count, 0), icon: sections.members.icon, to: 'members' },
   ] as const
 })
 
-watch(query, () => { page.value = 1 })
-watch(view, () => { page.value = 1 })
-watch(results, value => { page.value = Math.min(page.value, Math.max(1, Math.ceil(value.length / pageSize))) })
+watch([view, query, district], () => { page.value = 1 })
+watch(results, value => {
+  if (section.value !== 'members') page.value = Math.min(page.value, Math.max(1, Math.ceil(value.length / pageSize)))
+})
 
-async function call<T>(path: string, body?: Record<string, string>) {
+async function call<T>(path: string, body?: Record<string, string>, signal?: AbortSignal) {
   return $fetch<T>('/api/v1/' + path, {
     method: body ? 'POST' : 'GET',
     headers: { Authorization: 'Bearer ' + token.value.trim() },
     body,
+    signal,
   })
 }
+
+watch([section, district, query, page, dashboard], async ([current, selected, search, nextPage, data], _previous, onCleanup) => {
+  if (current !== 'members' || !data) {
+    memberPage.value = undefined
+    membersLoading.value = false
+    membersError.value = ''
+    return
+  }
+  const request = new AbortController()
+  onCleanup(() => request.abort())
+  const params = new URLSearchParams({ page: String(nextPage) })
+  if (selected !== 'all') params.set('district', selected)
+  if (search.trim()) params.set('search', search.trim())
+  membersLoading.value = true
+  membersError.value = ''
+  try {
+    const response = await call<AdminMemberPage>(`admin/members?${params}`, undefined, request.signal)
+    if (request.signal.aborted) return
+    memberPage.value = response
+    if (page.value !== response.page) page.value = response.page
+  } catch (problem) {
+    if (request.signal.aborted) return
+    const response = problem as { statusCode?: number }
+    if (response.statusCode === 401 || response.statusCode === 403) {
+      signOut()
+      error.value = '管理員登入已失效，請重新登入。'
+      return
+    }
+    memberPage.value = undefined
+    membersError.value = '暫時無法載入成員。'
+  } finally {
+    if (!request.signal.aborted) membersLoading.value = false
+  }
+}, { flush: 'post' })
 
 const errorText: Record<string, string> = {
   invalid_token: '登入識別碼無效或已過期。',
@@ -90,11 +141,34 @@ const errorText: Record<string, string> = {
   retry_transaction: '資料正在更新，請稍後重試。',
 }
 
+function storeSession(value: string) {
+  try {
+    if (value) window.sessionStorage.setItem(sessionKey, value)
+    else window.sessionStorage.removeItem(sessionKey)
+  } catch {
+    // Browsers can disable session storage. The current page still works.
+  }
+}
+
+onMounted(async () => {
+  try {
+    token.value = window.sessionStorage.getItem(sessionKey) ?? ''
+  } catch {
+    // The login form remains available when session storage is disabled.
+  }
+  try {
+    if (token.value) await load()
+  } finally {
+    restoringSession.value = false
+  }
+})
+
 async function load(action?: Action) {
   if (busy.value) return
   busy.value = true
   error.value = ''
   notice.value = ''
+  const session = token.value.trim()
   let saved = false
   try {
     if (action) {
@@ -102,13 +176,16 @@ async function load(action?: Action) {
       saved = true
       actionOpen.value = false
     }
-    dashboard.value = await call<AdminDashboard>('admin')
+    const data = await call<AdminDashboard>('admin')
+    if (token.value.trim() !== session) return
+    dashboard.value = data
+    storeSession(session)
     if (saved) notice.value = '已儲存並更新紀錄。'
   } catch (problem) {
     const response = problem as { statusCode?: number, data?: { statusMessage?: string } }
     const status = response.data?.statusMessage ?? ''
+    if (response.statusCode === 401 || response.statusCode === 403) signOut()
     error.value = saved ? '已儲存，暫時無法更新列表。' : errorText[status] ?? '暫時無法完成，請稍後重試。'
-    if (response.statusCode === 401 || response.statusCode === 403) dashboard.value = undefined
   } finally {
     busy.value = false
   }
@@ -156,10 +233,12 @@ function badge(key: SectionKey, row: AdminRow) {
 }
 
 function signOut() {
+  storeSession('')
   dashboard.value = undefined
   token.value = ''
   error.value = ''
   notice.value = ''
+  district.value = 'all'
   recordOpen.value = false
   actionOpen.value = false
   navigate('overview')
@@ -178,9 +257,10 @@ useHead({ title: '社區救生圈管理', htmlAttrs: { lang: 'zh-Hant-HK' } })
           </span>
           <h1 class="text-xl font-semibold">社區救生圈管理</h1>
         </div>
-        <form class="space-y-4" @submit.prevent="load()">
+        <p v-if="restoringSession" role="status" class="text-sm text-muted">正在驗證登入…</p>
+        <form v-else class="space-y-4" @submit.prevent="load()">
           <UFormField label="管理員登入識別碼">
-            <UInput v-model="token" icon="i-lucide-key-round" type="password" autocomplete="off" required class="w-full" />
+            <UInput v-model="token" icon="i-lucide-key-round" type="password" autocomplete="off" required :disabled="busy" class="w-full" />
           </UFormField>
           <UAlert v-if="error" color="error" variant="soft" :title="error" />
           <UButton type="submit" block :loading="busy" :disabled="!token.trim()" label="登入" />
@@ -252,10 +332,17 @@ useHead({ title: '社區救生圈管理', htmlAttrs: { lang: 'zh-Hant-HK' } })
 
           <section v-else class="min-w-0 overflow-hidden rounded-lg border border-default bg-default" :aria-label="title">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-default px-4 py-3">
-              <UInput v-model="query" icon="i-lucide-search" :placeholder="'搜尋' + title" :aria-label="'搜尋' + title" class="w-full sm:max-w-xs" />
-              <span class="text-sm tabular-nums text-muted">{{ results.length }} 筆{{ dashboard[section].length === 100 ? ' · 已載入上限 100 筆' : '' }}</span>
+              <div class="flex w-full flex-wrap gap-2 sm:w-auto">
+                <USelect v-if="section === 'members'" v-model="district" :items="districtOptions" aria-label="地區" class="w-full sm:w-44" />
+                <UInput v-model="query" icon="i-lucide-search" :maxlength="section === 'members' ? 100 : undefined"
+                  :placeholder="section === 'members' ? '搜尋名稱或使用者名稱' : '搜尋' + title"
+                  :aria-label="'搜尋' + title" class="w-full sm:w-64" />
+              </div>
+              <span v-if="section !== 'members' || !membersLoading" class="text-sm tabular-nums text-muted">{{ resultsTotal }} 筆{{ section !== 'members' && dashboard[section].length === 100 ? ' · 已載入上限 100 筆' : '' }}</span>
             </div>
-            <UTable :key="section" :data="visibleRows" :columns="columns" :empty="query.trim() ? '找不到符合的紀錄' : '目前沒有紀錄'"
+            <UAlert v-if="section === 'members' && membersError" color="error" variant="soft" :title="membersError" />
+            <UTable v-else :key="section" :data="visibleRows" :columns="columns" :loading="section === 'members' && membersLoading"
+              :empty="query.trim() ? '找不到符合的紀錄' : section === 'members' ? '此範圍目前沒有成員' : '目前沒有紀錄'"
               :ui="{ td: 'align-top max-w-72 whitespace-normal wrap-break-word' }">
               <template #state-cell="{ row }">
                 <UBadge :color="badge(section, row.original)" variant="soft" :label="displayValue(section, row.original, 'state')" />
@@ -269,8 +356,8 @@ useHead({ title: '社區救生圈管理', htmlAttrs: { lang: 'zh-Hant-HK' } })
                 </UDropdownMenu>
               </template>
             </UTable>
-            <div v-if="results.length > pageSize" class="flex justify-end border-t border-default p-3">
-              <UPagination v-model:page="page" :items-per-page="pageSize" :total="results.length" :sibling-count="0" />
+            <div v-if="resultsTotal > pageSize" class="flex justify-end border-t border-default p-3">
+              <UPagination v-model:page="page" :items-per-page="pageSize" :total="resultsTotal" :sibling-count="0" />
             </div>
           </section>
         </template>

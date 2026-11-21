@@ -5,21 +5,46 @@ import 'lightmesh.dart' show MeshChatService, MeshNetworkMode;
 import 'network_pairing_client.dart';
 
 class LifebuoyChatConnection extends StatefulWidget {
-  const LifebuoyChatConnection({super.key, required this.mesh});
+  const LifebuoyChatConnection({
+    super.key,
+    required this.mesh,
+    required this.directoryUrl,
+  });
 
-  static const lightMeshCode = '582193';
   final MeshChatService mesh;
+  final String directoryUrl;
 
   @override
   State<LifebuoyChatConnection> createState() => _LifebuoyChatConnectionState();
 }
 
 class _LifebuoyChatConnectionState extends State<LifebuoyChatConnection> {
-  final code = TextEditingController(
-    text: LifebuoyChatConnection.lightMeshCode,
-  );
+  final code = TextEditingController();
   bool busy = false;
+  bool loadingOwnCode = false;
+  String ownCode = '';
   String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    ownCode = widget.mesh.networkConnectionCode;
+    if (ownCode.isEmpty && widget.mesh.onlineConfigured) loadOwnCode();
+  }
+
+  Future<void> loadOwnCode() async {
+    setState(() => loadingOwnCode = true);
+    try {
+      final value = await NetworkPairingClient(
+        widget.directoryUrl,
+      ).codeFor(widget.mesh.onlineRelayUrl);
+      if (mounted) setState(() => ownCode = value);
+    } on FormatException {
+      // Retrying the lookup does not affect entering another network's code.
+    } finally {
+      if (mounted) setState(() => loadingOwnCode = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -45,7 +70,7 @@ class _LifebuoyChatConnectionState extends State<LifebuoyChatConnection> {
       setState(() => error = '請輸入 6 位數字連接碼。');
       return;
     }
-    if (value == mesh.networkConnectionCode) {
+    if (value == ownCode) {
       setState(() => error = '這是本網絡的連接碼，請輸入另一個 APP 的碼。');
       return;
     }
@@ -73,7 +98,6 @@ class _LifebuoyChatConnectionState extends State<LifebuoyChatConnection> {
       listenable: mesh,
       builder: (context, _) {
         final bridge = mesh.networkBridge;
-        final ownCode = mesh.networkConnectionCode;
         return AlertDialog(
           title: const Text('連接另一個光網 APP'),
           scrollable: true,
@@ -103,7 +127,14 @@ class _LifebuoyChatConnectionState extends State<LifebuoyChatConnection> {
                     ],
                   ),
                   const Divider(),
-                ],
+                ] else if (loadingOwnCode)
+                  const LinearProgressIndicator(semanticsLabel: '查詢本網絡連接碼')
+                else
+                  TextButton.icon(
+                    onPressed: loadOwnCode,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重新查詢本網絡連接碼'),
+                  ),
                 TextField(
                   controller: code,
                   enabled: !busy && !bridge.active,
@@ -115,7 +146,6 @@ class _LifebuoyChatConnectionState extends State<LifebuoyChatConnection> {
                   },
                   decoration: InputDecoration(
                     labelText: '對方的 6 位連接碼',
-                    helperText: '傳播光 · ${LifebuoyChatConnection.lightMeshCode}',
                     suffixIcon: IconButton(
                       tooltip: '貼上連接碼',
                       onPressed: busy || bridge.active ? null : pasteCode,

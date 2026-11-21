@@ -381,4 +381,36 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
       [createHash('sha256').update(signup.token).digest()])
     await request('signup', 'home', null, 401)
   })
+
+  await t.test('dashboard lists and searches members in all Hong Kong districts', async () => {
+    const dashboard = await request('admin', 'admin')
+    const districts = dashboard.districts.filter(district => district.id.startsWith('hk-'))
+    assert.equal(districts.length, 18)
+    assert.equal(districts.find(district => district.id === 'hk-eastern').name, '東區')
+    const east = await request('admin', 'admin/members?district=hk-eastern&search=' + encodeURIComponent('跨區驗收'))
+    assert.ok(east.total > 0)
+    assert.ok(east.members.every(member => member.district === '東區' && member.username.endsWith('_east')))
+    const username = east.members[0].username
+    const byUsername = await request('admin', 'admin/members?search=' + encodeURIComponent(username.toUpperCase()))
+    assert.deepEqual(byUsername.members.map(member => member.username), [username])
+    assert.deepEqual(Object.keys(byUsername.members[0]).sort(), ['balance', 'district', 'id', 'name', 'role', 'username'])
+    await request('payer', 'admin/members?district=hk-eastern', null, 403)
+    await request('admin', 'admin/members?district=' + other, null, 400)
+
+    const district = 'hk-islands'
+    const prefix = randomUUID()
+    for (let i = 0; i < 11; i++) {
+      const id = randomUUID()
+      await db.execute("INSERT INTO members (community_id,id,name) VALUES (?,?,?)", [district, id, `${prefix} ${i}`])
+    }
+    const path = `admin/members?district=${district}&search=${prefix}`
+    const first = await request('admin', path)
+    const second = await request('admin', path + '&page=2')
+    assert.equal(first.total, 11)
+    assert.equal(first.members.length, 10)
+    assert.equal(second.members.length, 1)
+    assert.equal(second.page, 2)
+    assert.ok(!first.members.some(member => member.id === second.members[0].id))
+    assert.deepEqual(await request('admin', path + 'unmatched'), { members: [], total: 0, page: 1 })
+  })
 })

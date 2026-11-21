@@ -189,6 +189,9 @@ class RelayNetworkBridge extends ChangeNotifier {
         return;
       }
       if (forwardPacket?.call(decoded) == false) return;
+      // Older relays stamp both fields and reject packets carrying either one.
+      decoded.remove('relayReceivedAt');
+      decoded.remove('relaySourcePeerId');
       final rawPath = decoded.remove(_pathKey);
       if (rawPath != null &&
           (rawPath is! List || rawPath.any((id) => id is! String))) {

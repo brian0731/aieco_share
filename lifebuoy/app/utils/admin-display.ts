@@ -8,7 +8,7 @@ export const sections = {
     ['reason', '申訴理由'], ['outcome', '處理狀態'], ['created_at', '提出時間'],
   ] },
   members: { label: '成員', icon: 'i-lucide-users', columns: [
-    ['name', '顯示名稱'], ['role', '角色'], ['balance', '可用時間'],
+    ['name', '顯示名稱'], ['username', '使用者名稱'], ['district', '地區'], ['role', '角色'], ['balance', '可用時間'],
   ] },
   services: { label: '服務配對', icon: 'i-lucide-hand-heart', columns: [
     ['title', '服務'], ['provider_name', '協助者'], ['payer_name', '受助者'],
@@ -33,7 +33,11 @@ export const sections = {
 } satisfies Record<string, Section>
 
 export type SectionKey = keyof typeof sections
-export type AdminDashboard = Record<SectionKey, AdminRow[]> & { community?: string }
+export type AdminDashboard = Record<SectionKey, AdminRow[]> & {
+  community?: string
+  districts: { id: string, name: string, count: number }[]
+}
+export type AdminMemberPage = { members: AdminRow[], total: number, page: number }
 
 const statuses: Record<string, string> = {
   agreement: '待同意時數', pending: '待確認完成', settled: '已入帳', cancelled: '已取消',

@@ -11465,7 +11465,7 @@ class _ChatPanelState extends State<_ChatPanel> {
                     padding: const EdgeInsets.all(14),
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
-                      return _MessageBubble(
+                      return MeshMessageBubble(
                         message: messages[index],
                         onReport: widget.onReportMessage,
                         onBlockUser: widget.onBlockUser,
@@ -12810,18 +12810,19 @@ class _EmptyMessages extends StatelessWidget {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({
+class MeshMessageBubble extends StatelessWidget {
+  const MeshMessageBubble({
+    super.key,
     required this.message,
-    required this.onReport,
-    required this.onBlockUser,
-    required this.onDelete,
+    this.onReport,
+    this.onBlockUser,
+    this.onDelete,
   });
 
   final MeshMessage message;
-  final ValueChanged<MeshMessage> onReport;
-  final void Function(String userId, String userName) onBlockUser;
-  final ValueChanged<MeshMessage> onDelete;
+  final ValueChanged<MeshMessage>? onReport;
+  final void Function(String userId, String userName)? onBlockUser;
+  final ValueChanged<MeshMessage>? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -12844,58 +12845,66 @@ class _MessageBubble extends StatelessWidget {
                 ? TextDirection.rtl
                 : TextDirection.ltr,
             children: [
-              LocalizedText(
-                '${message.senderName} · ${_formatTime(message.sentAt)}',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodySmall?.copyWith(color: const Color(0xFF66756D)),
-              ),
-              PopupMenuButton<_MessageModerationAction>(
-                tooltip: _localizedUiText('訊息安全選項'),
-                icon: const Icon(Icons.more_vert, size: 18),
-                padding: EdgeInsets.zero,
-                onSelected: (action) {
-                  switch (action) {
-                    case _MessageModerationAction.report:
-                      onReport(message);
-                      break;
-                    case _MessageModerationAction.block:
-                      onBlockUser(message.senderId, message.senderName);
-                      break;
-                    case _MessageModerationAction.delete:
-                      onDelete(message);
-                      break;
-                  }
-                },
-                itemBuilder: (context) => [
-                  if (!message.isMine)
-                    const PopupMenuItem<_MessageModerationAction>(
-                      value: _MessageModerationAction.report,
-                      child: ListTile(
-                        leading: Icon(Icons.flag_outlined),
-                        title: LocalizedText('舉報訊息'),
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
-                  if (!message.isMine)
-                    const PopupMenuItem<_MessageModerationAction>(
-                      value: _MessageModerationAction.block,
-                      child: ListTile(
-                        leading: Icon(Icons.block),
-                        title: LocalizedText('封鎖用戶'),
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    ),
-                  const PopupMenuItem<_MessageModerationAction>(
-                    value: _MessageModerationAction.delete,
-                    child: ListTile(
-                      leading: Icon(Icons.delete_outline),
-                      title: LocalizedText('從信息流刪除'),
-                      contentPadding: EdgeInsets.zero,
-                    ),
+              Flexible(
+                child: LocalizedText(
+                  '${message.senderName} · ${_formatTime(message.sentAt)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF66756D),
                   ),
-                ],
+                ),
               ),
+              if (onDelete != null ||
+                  (!message.isMine &&
+                      (onReport != null || onBlockUser != null)))
+                PopupMenuButton<_MessageModerationAction>(
+                  tooltip: _localizedUiText('訊息安全選項'),
+                  icon: const Icon(Icons.more_vert, size: 18),
+                  padding: EdgeInsets.zero,
+                  onSelected: (action) {
+                    switch (action) {
+                      case _MessageModerationAction.report:
+                        onReport?.call(message);
+                        break;
+                      case _MessageModerationAction.block:
+                        onBlockUser?.call(message.senderId, message.senderName);
+                        break;
+                      case _MessageModerationAction.delete:
+                        onDelete?.call(message);
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    if (!message.isMine && onReport != null)
+                      const PopupMenuItem<_MessageModerationAction>(
+                        value: _MessageModerationAction.report,
+                        child: ListTile(
+                          leading: Icon(Icons.flag_outlined),
+                          title: LocalizedText('舉報訊息'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    if (!message.isMine && onBlockUser != null)
+                      const PopupMenuItem<_MessageModerationAction>(
+                        value: _MessageModerationAction.block,
+                        child: ListTile(
+                          leading: Icon(Icons.block),
+                          title: LocalizedText('封鎖用戶'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    if (onDelete != null)
+                      const PopupMenuItem<_MessageModerationAction>(
+                        value: _MessageModerationAction.delete,
+                        child: ListTile(
+                          leading: Icon(Icons.delete_outline),
+                          title: LocalizedText('從信息流刪除'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                  ],
+                ),
             ],
           ),
           const SizedBox(height: 4),
@@ -13884,8 +13893,8 @@ class MeshChatService extends ChangeNotifier {
       localRelayUrl: _relayUrl,
       forwardPacket: bridgePublicChatOnly
           ? (packet) =>
-              packet['kind'] == _chatKind &&
-              (packet['roomId'] ?? _defaultRoomId) == _defaultRoomId
+                packet['kind'] == _chatKind &&
+                (packet['roomId'] ?? _defaultRoomId) == _defaultRoomId
           : null,
       onConnected: () {
         _announcePresence();

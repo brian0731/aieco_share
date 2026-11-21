@@ -1,5 +1,6 @@
 import 'package:aieco_share/lifebuoy_illustration.dart';
 import 'package:aieco_share/lifebuoy_lightmesh_banner.dart';
+import 'package:aieco_share/lightmesh.dart' show MeshMessage, MeshMessageBubble;
 import 'package:aieco_share/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -45,9 +46,64 @@ void main() {
         find.byType(LifebuoyLightMeshBanner),
         key == '社區互助' ? findsOneWidget : findsNothing,
       );
+      if (key == '光網聊天') {
+        final publicRoom = tester.getRect(find.text('公開房間'));
+        final connection = find.text('連接光網');
+        final interconnect = tester.getRect(connection);
+        expect(find.text('LAN 聊天'), findsNothing);
+        expect(publicRoom.center.dy, closeTo(interconnect.center.dy, 1));
+        expect(publicRoom.right, lessThan(interconnect.left));
+        expect(interconnect.right, lessThanOrEqualTo(320));
+        expect(find.text('傳播頻道'), findsOneWidget);
+        expect(connection.hitTestable(), findsOneWidget);
+      }
       expect(tester.takeException(), isNull);
     }
   });
+
+  testWidgets(
+    'Chat bubbles align incoming and outgoing text on opposite sides',
+    (tester) async {
+      MeshMessage message(String id, {required bool isMine}) => MeshMessage(
+        id: id,
+        roomId: 'room:main',
+        roomName: '傳播頻道',
+        senderId: id,
+        senderName: isMine ? '我' : List.filled(60, '傳播光').join(),
+        text: '你好',
+        sentAt: DateTime(2026, 11, 21),
+        isMine: isMine,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 280,
+                child: ListView(
+                  children: [
+                    MeshMessageBubble(
+                      message: message('received', isMine: false),
+                    ),
+                    MeshMessageBubble(message: message('sent', isMine: true)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final received = find.byKey(
+        const ValueKey('selectable-message-received'),
+      );
+      final sent = find.byKey(const ValueKey('selectable-message-sent'));
+      expect(tester.getTopLeft(received).dx, lessThan(30));
+      expect(tester.getTopRight(sent).dx, greaterThan(250));
+      expect(tester.widget<SelectableText>(sent).style?.color, Colors.white);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('Login art and account controls fit on a narrow phone', (
     tester,
