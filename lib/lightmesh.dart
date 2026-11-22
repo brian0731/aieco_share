@@ -13880,7 +13880,7 @@ class MeshChatService extends ChangeNotifier {
     String onlineRelayUrl = _onlineRelayUrl,
     String networkDirectoryUrl = _networkDirectoryUrl,
     this.networkConnectionCode = _networkConnectionCode,
-    bool bridgePublicChatOnly = false,
+    this.bridgePublicChatOnly = false,
   }) : _connectLanSocket = connectLanSocket ?? _defaultConnectLanSocket,
        _pairing = NetworkPairingClient(networkDirectoryUrl),
        _relayUrl = onlineRelayUrl,
@@ -13898,7 +13898,8 @@ class MeshChatService extends ChangeNotifier {
       forwardPacket: bridgePublicChatOnly
           ? (packet) =>
                 packet['kind'] == _chatKind &&
-                (packet['roomId'] ?? _defaultRoomId) == _defaultRoomId
+                (packet['roomId'] ?? _defaultRoomId) == _defaultRoomId &&
+                packet['targetId'] == null
           : null,
       onConnected: () {
         _announcePresence();
@@ -13928,6 +13929,7 @@ class MeshChatService extends ChangeNotifier {
   static const String _creditKind = 'aieco.light.credit.v1';
   static const String _adminKind = 'aieco.light.admin.v1';
   static const String _defaultRoomId = 'room:main';
+  static const int maxChatMessages = 300;
   static const String _defaultRoomName = '傳播頻道';
   static const String _appName = 'AIECO.HK 傳播光';
   static const String _nodeIdPrefsKey = 'mesh.nodeId';
@@ -14017,6 +14019,8 @@ class MeshChatService extends ChangeNotifier {
   final Map<String, MeshSupply> _supplies = <String, MeshSupply>{};
   final Map<String, MeshCreditVote> _creditVotes = <String, MeshCreditVote>{};
   final List<MeshMessage> _messages = <MeshMessage>[];
+  final Set<String> _restoredChatIds = <String>{};
+  final bool bridgePublicChatOnly;
   final Set<String> _seenMessageIds = <String>{};
   final Set<String> _seenRoomIds = <String>{_defaultRoomId};
   final Map<String, DateTime> _lastSyncAt = <String, DateTime>{};
@@ -14429,6 +14433,27 @@ class MeshChatService extends ChangeNotifier {
     );
   }
 
+  List<MeshMessage> get publicRoomMessages => messages
+      .where((message) => message.roomId == _defaultRoomId)
+      .toList();
+
+  void restorePublicChatHistory(Iterable<MeshMessage> history) {
+    for (final message in history) {
+      if (message.roomId != _defaultRoomId ||
+          _blockedUserIds.contains(message.senderId) ||
+          _hiddenMessageIds.contains(message.id) ||
+          !MeshContentModeration.check(message.text).allowed ||
+          !MeshContentModeration.check(message.senderName).allowed ||
+          !_seenMessageIds.add(message.id)) {
+        continue;
+      }
+      _restoredChatIds.add(message.id);
+      _messages.add(message);
+    }
+    _trimMessages();
+    notifyListeners();
+  }
+
   Future<void> loadSavedDisplayName() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -14502,6 +14527,7 @@ class MeshChatService extends ChangeNotifier {
       final reportStrings =
           prefs.getStringList(_moderationReportsPrefsKey) ?? const <String>[];
 
+      if (_disposed) return;
       _eulaAcceptedAt = acceptedAt;
       _blockedUserIds
         ..clear()
@@ -14516,7 +14542,7 @@ class MeshChatService extends ChangeNotifier {
         );
       _hiddenMessageIds
         ..clear()
-        ..addAll(hiddenMessages.where((id) => id.startsWith('msg-')));
+        ..addAll(hiddenMessages.where((id) => id.isNotEmpty));
       _moderationReports
         ..clear()
         ..addAll(
@@ -14613,6 +14639,7 @@ class MeshChatService extends ChangeNotifier {
     _activityCreationCount = 0;
     _creditVotes.clear();
     _messages.clear();
+    _restoredChatIds.clear();
     _lastIncomingMessage = null;
     _incomingMessageVersion = 0;
     _seenMessageIds
@@ -15782,6 +15809,7 @@ class MeshChatService extends ChangeNotifier {
     String text, {
     String? authorizedMessageId,
     String? authorizedSenderId,
+    String? localMemberId,
   }) async {
     final clean = text.trim();
     if (clean.isEmpty) {
@@ -15818,6 +15846,7 @@ class MeshChatService extends ChangeNotifier {
       text: clean,
       sentAt: sentAt,
       isMine: true,
+      localMemberId: localMemberId,
     );
     final packet = message.toPacket();
 
@@ -16201,6 +16230,11 @@ class MeshChatService extends ChangeNotifier {
     String remoteHost, {
     bool fromOnline = false,
   }) {
+    if (bridgePublicChatOnly &&
+        ((packet['roomId'] ?? _defaultRoomId) != _defaultRoomId ||
+            packet['targetId'] != null)) {
+      return;
+    }
     final messageId = _stringValue(packet['messageId']);
     final senderId = _stringValue(packet['senderId']);
     final text = _stringValue(packet['text']);
@@ -17162,10 +17196,7 @@ class MeshChatService extends ChangeNotifier {
     }
 
     // Send missed chat before bulk community data, on a single connection.
-    final recent = _messages.length <= 20
-        ? _messages
-        : _messages.sublist(_messages.length - 20);
-    for (final message in recent) {
+    for (final message in _recentMessagesToShare()) {
       packets.add(message.toPacket(hops: 1));
     }
 
@@ -17223,10 +17254,7 @@ class MeshChatService extends ChangeNotifier {
       await _sendPacketToOnline(vote.toPacket(hops: 1));
     }
 
-    final recent = _messages.length <= 20
-        ? _messages
-        : _messages.sublist(_messages.length - 20);
-    for (final message in recent) {
+    for (final message in _recentMessagesToShare()) {
       await _sendPacketToOnline(message.toPacket(hops: 1));
     }
 
@@ -17767,10 +17795,15 @@ class MeshChatService extends ChangeNotifier {
     }
   }
 
+  Iterable<MeshMessage> _recentMessagesToShare() => _messages.reversed
+      .where((message) => !_restoredChatIds.contains(message.id))
+      .take(20)
+      .toList()
+      .reversed;
+
   void _trimMessages() {
-    const maxMessages = 300;
-    if (_messages.length > maxMessages) {
-      _messages.removeRange(0, _messages.length - maxMessages);
+    if (_messages.length > maxChatMessages) {
+      _messages.removeRange(0, _messages.length - maxChatMessages);
     }
   }
 
@@ -18650,6 +18683,7 @@ class MeshMessage {
     required this.text,
     required this.sentAt,
     required this.isMine,
+    this.localMemberId,
   });
 
   final String id;
@@ -18662,6 +18696,7 @@ class MeshMessage {
   final String text;
   final DateTime sentAt;
   final bool isMine;
+  final String? localMemberId;
 
   Map<String, Object?> toPacket({int hops = 0}) {
     final lightPointName = senderDisplayName.trim().isEmpty

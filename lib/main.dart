@@ -12,6 +12,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'lifebuoy_chat.dart';
+import 'lifebuoy_chat_history.dart';
 import 'lifebuoy_illustration.dart';
 import 'lifebuoy_lightmesh_banner.dart';
 import 'lifebuoy_rating.dart';
@@ -94,6 +95,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   String? error;
   bool busy = false;
   int chatRevision = 0;
+  final chatHistory = LifebuoyChatHistory(relayUrl: LifebuoyChat.relay);
   int tab = 0;
   String postFilter = 'all';
   _TimeTab timeTab = _TimeTab.services;
@@ -403,6 +405,17 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       exchangeSearch.clear();
     }
     clearSession();
+    if (result == 'delete') {
+      try {
+        await chatHistory.eraseMember(member['id'] as String);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('帳戶已刪除，但暫時無法清理手機上的聊天紀錄。')),
+          );
+        }
+      }
+    }
     if (biometricSaved) await discardInvalidBiometricSession();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -555,6 +568,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
                 exchangeBoard(),
                 LifebuoyChat(
                   key: ValueKey(chatRevision),
+                  history: chatHistory,
                   active: tab == 3,
                   memberId: account?['id'] as String?,
                   signIn: signin,

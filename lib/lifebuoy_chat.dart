@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'lifebuoy_chat_connection.dart';
+import 'lifebuoy_chat_history.dart';
 import 'lifebuoy_illustration.dart';
 import 'lifebuoy_search.dart';
 import 'lightmesh.dart'
@@ -49,6 +51,7 @@ class LifebuoyChat extends StatefulWidget {
   const LifebuoyChat({
     super.key,
     required this.active,
+    required this.history,
     this.report,
     this.checkModeration,
     this.prepareMessage,
@@ -57,6 +60,11 @@ class LifebuoyChat extends StatefulWidget {
   });
 
   final bool active;
+  final LifebuoyChatHistory history;
+  static const relay = String.fromEnvironment(
+    'LIFEBUOY_RELAY_URL',
+    defaultValue: 'wss://lifebuoy.aieco.hk/ws/light',
+  );
   final Future<bool> Function(Map<String, dynamic>)? report;
   final Future<Map<String, dynamic>> Function(List<String>, List<String>)?
   checkModeration;
@@ -70,10 +78,6 @@ class LifebuoyChat extends StatefulWidget {
 }
 
 class _LifebuoyChatState extends State<LifebuoyChat> {
-  static const relay = String.fromEnvironment(
-    'LIFEBUOY_RELAY_URL',
-    defaultValue: 'wss://lifebuoy.aieco.hk/ws/light',
-  );
   static const connectionCode = String.fromEnvironment(
     'LIFEBUOY_NETWORK_CONNECTION_CODE',
   );
@@ -81,8 +85,8 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
     'AIECO_NETWORK_DIRECTORY_URL',
     defaultValue: 'https://lifebuoy.aieco.hk/api/lightmesh',
   );
-  final mesh = MeshChatService(
-    onlineRelayUrl: relay,
+  late final mesh = MeshChatService(
+    onlineRelayUrl: widget.history.relayUrl,
     networkConnectionCode: connectionCode,
     networkDirectoryUrl: directory,
     bridgePublicChatOnly: true,
@@ -94,11 +98,15 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   Timer? moderationTimer;
   final removedMessages = <String>{};
   final removedSenders = <String>{};
+  Future<void>? restoringHistory;
+  List<MeshMessage>? lastHistory;
+  bool historyReady = false;
+  bool historyUnavailable = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.active) activateChat();
+    if (widget.active) unawaited(activateChat());
   }
 
   @override
@@ -108,14 +116,57 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
       composer.clear();
       search.clear();
     }
-    if (widget.active && !oldWidget.active) activateChat();
+    if (widget.active && !oldWidget.active) unawaited(activateChat());
     if (!widget.active) moderationTimer?.cancel();
   }
 
-  void activateChat() {
+  Future<void> restoreHistory() async {
+    await mesh.loadSavedDisplayName();
+    if (!mounted) return;
+    await mesh.loadModerationPreferences();
+    if (!mounted) return;
+    try {
+      final saved = await widget.history.load();
+      if (!mounted) return;
+      lastHistory = saved;
+      mesh.restorePublicChatHistory(saved);
+    } catch (_) {
+      if (mounted) setState(() => historyUnavailable = true);
+    }
+    if (!mounted) return;
+    setState(() => historyReady = true);
+    mesh.addListener(updateHistory);
+    updateHistory();
+  }
+
+  void updateHistory() {
+    final snapshot = mesh.publicRoomMessages;
+    if (listEquals(snapshot, lastHistory)) return;
+    lastHistory = snapshot;
+    unawaited(saveHistory(snapshot));
+  }
+
+  Future<void> saveHistory(List<MeshMessage> snapshot) async {
+    try {
+      await widget.history.save(snapshot);
+      if (mounted && historyUnavailable) {
+        setState(() => historyUnavailable = false);
+      }
+    } catch (_) {
+      if (identical(lastHistory, snapshot)) lastHistory = null;
+      if (mounted && !historyUnavailable) {
+        setState(() => historyUnavailable = true);
+      }
+    }
+  }
+
+  Future<void> activateChat() async {
+    await (restoringHistory ??= restoreHistory());
+    if (!mounted || !widget.active) return;
     joinPublicRoom();
     if (widget.checkModeration != null) {
       unawaited(refreshModeration());
+      moderationTimer?.cancel();
       moderationTimer = Timer.periodic(
         const Duration(seconds: 15),
         (_) => refreshModeration(),
@@ -237,14 +288,9 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   );
 
   void joinPublicRoom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted &&
-          widget.active &&
-          mesh.onlineConfigured &&
-          !mesh.onlineConnected) {
-        unawaited(mesh.refreshNetworkPresence());
-      }
-    });
+    if (mesh.onlineConfigured && !mesh.onlineConnected) {
+      unawaited(mesh.refreshNetworkPresence());
+    }
   }
 
   Future<void> operate(Future<void> Function() task) async {
@@ -259,6 +305,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   @override
   void dispose() {
     moderationTimer?.cancel();
+    mesh.removeListener(updateHistory);
     mesh.dispose();
     composer.dispose();
     search.dispose();
@@ -282,6 +329,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
         text,
         authorizedMessageId: authorization?.messageId,
         authorizedSenderId: authorization?.senderId,
+        localMemberId: member,
       );
       if (sent && mounted && composer.text == draft) composer.clear();
     } catch (error) {
@@ -350,6 +398,8 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+              if (historyUnavailable)
+                const Text('暫時無法存取手機上的聊天紀錄。', textAlign: TextAlign.center),
               const SizedBox(height: 8),
               Expanded(
                 child: Card(
@@ -396,7 +446,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                       ),
                       const Divider(height: 1, color: Color(0xffe0e5de)),
                       Expanded(child: messageList(messages)),
-                      if (mesh.isRunning)
+                      if (mesh.onlineConfigured)
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                           child: Row(
@@ -408,7 +458,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                                   maxLines: 4,
                                   maxLength: 2000,
                                   textInputAction: TextInputAction.send,
-                                  onSubmitted: busy
+                                  onSubmitted: busy || !historyReady
                                       ? null
                                       : (_) => unawaited(sendMessage()),
                                   decoration: InputDecoration(
@@ -427,7 +477,9 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                               IconButton.filled(
                                 tooltip: '送出',
                                 icon: const Icon(Icons.send),
-                                onPressed: busy ? null : sendMessage,
+                                onPressed: busy || !historyReady
+                                    ? null
+                                    : sendMessage,
                               ),
                             ],
                           ),
@@ -444,6 +496,9 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   );
 
   Widget messageList(List<MeshMessage> roomMessages) {
+    if (!historyReady && widget.active) {
+      return const Center(child: Text('正在載入聊天紀錄…'));
+    }
     final query = search.text;
     final messages = roomMessages.reversed
         .where(
