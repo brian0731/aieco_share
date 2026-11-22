@@ -1,6 +1,7 @@
 import type { PoolConnection } from 'mysql2/promise'
 import { type Actor, audit, boundedText, fail, rows, uuid } from './database'
 import { blockDispute } from './ratings'
+import { requireAllowedContent } from './moderation'
 
 type Item = { id: string; owner_id: string; reserved_by: string | null; exchanged: number; withdrawn: number }
 export type Exchange = {
@@ -23,6 +24,7 @@ export async function publishItem(db: PoolConnection, actor: Actor, input: Input
   const title = boundedText(input.title, 120, 'invalid_title')
   const wanted = boundedText(input.wanted, 120, 'invalid_wanted')
   const area = boundedText(input.area, 80, 'invalid_area')
+  requireAllowedContent(title, wanted, area)
   await db.execute(
     'INSERT INTO items (community_id,id,owner_id,title,wanted,area) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id',
     [actor.community_id,id,actor.id,title,wanted,area],
@@ -59,6 +61,7 @@ export async function proposeExchange(db: PoolConnection, actor: Actor, input: I
   const wanted = uuid(input.wanted)
   if (offered === wanted) fail(400, 'different_items_required')
   const meeting = boundedText(input.meeting ?? '待確認的公共交收點', 200, 'invalid_meeting')
+  requireAllowedContent(meeting)
   const community = actor.community_id
   // Insert and retries must acquire the exchange lock before locking the items.
   const [prior] = await rows<Exchange>(db, 'SELECT * FROM exchanges WHERE community_id=? AND id=?', [community,id])

@@ -141,6 +141,9 @@ extension _ExchangePages on _LifebuoyHomeState {
         _ListCard(
           icon: Icons.inventory_2_outlined,
           title: item['title'].toString(),
+          menu: item['owner_id'] == account?['id']
+              ? null
+              : listingSafetyMenu(item, item: true),
           label: item['reserved'] == 1
               ? '已保留'
               : item['owner_id'] == account?['id']

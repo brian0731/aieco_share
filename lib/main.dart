@@ -20,12 +20,17 @@ import 'lifebuoy_search.dart';
 part 'lifebuoy_districts.dart';
 part 'lifebuoy_exchange.dart';
 part 'lifebuoy_lists.dart';
+part 'lifebuoy_moderation.dart';
 part 'lifebuoy_signin.dart';
 part 'lifebuoy_settings.dart';
 
 void main() => runApp(const LifebuoyApp());
 
 typedef Json = Map<String, dynamic>;
+
+class _BlockedContentException extends FormatException {
+  const _BlockedContentException() : super('內容未能刊登。請移除不當字眼後重試。');
+}
 
 class LifebuoyApp extends StatelessWidget {
   const LifebuoyApp({super.key});
@@ -57,6 +62,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   final area = TextEditingController();
   final duration = TextEditingController(text: '30');
   final postSearch = TextEditingController();
+  final blockedMembers = ValueNotifier<Map<String, String>>({});
   final timeSearch = TextEditingController();
   final exchangeSearch = TextEditingController();
   final random = Random.secure();
@@ -87,6 +93,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   String kind = 'request';
   String? error;
   bool busy = false;
+  int chatRevision = 0;
   int tab = 0;
   String postFilter = 'all';
   _TimeTab timeTab = _TimeTab.services;
@@ -94,12 +101,15 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   void selectPostFilter(String value) => setState(() => postFilter = value);
   void selectTimeTab(_TimeTab value) => setState(() => timeTab = value);
   void updateSearch() => setState(() {});
+  void updateBlockedMembers(Map<String, String> next) =>
+      setState(() => blockedMembers.value = next);
 
   @override
   void initState() {
     super.initState();
     if (biometricPlatform) unawaited(checkBiometricSession());
     unawaited(run(refresh));
+    unawaited(restoreBlockedMembers());
   }
 
   @override
@@ -108,6 +118,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
     area.dispose();
     duration.dispose();
     postSearch.dispose();
+    blockedMembers.dispose();
     timeSearch.dispose();
     exchangeSearch.dispose();
     super.dispose();
@@ -117,7 +128,17 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   String draftKey(String member) =>
       '$draftPrefix${account?['community_id']}.$member';
   Json? get account => home?['account'] as Json?;
-  List<Json> list(String key) => (home?[key] as List? ?? []).cast<Json>();
+  List<Json> list(String key) {
+    final records = (home?[key] as List? ?? []).cast<Json>();
+    if (key != 'posts' && key != 'items') return records;
+    return records
+        .where(
+          (row) => !blockedMembers.value.containsKey(
+            listingAuthorKey(row, item: key == 'items'),
+          ),
+        )
+        .toList();
+  }
 
   Future<Json> api(String path, [Json? data]) async {
     final base = Uri.tryParse(endpoint);
@@ -148,6 +169,10 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           .timeout(const Duration(seconds: 12));
       final result = jsonDecode(body) as Json;
       if (response.statusCode >= 400) {
+        if (response.statusCode == 422 &&
+            result['statusMessage'] == 'content_blocked') {
+          throw const _BlockedContentException();
+        }
         if (response.statusCode == 401 && activeToken != null) {
           if (biometricSaved) await discardInvalidBiometricSession();
           clearSession();
@@ -172,6 +197,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           'already_matched' => '此服務已有配對',
           'rating_exists' => '你已為這筆紀錄評分。',
           'rating_unavailable' => '這筆紀錄已無法評分。',
+          'content_not_found' => '內容已下架或無法找到。',
           'trade_disputed' => '這筆紀錄正在處理申訴。',
           _ => '操作未完成（${response.statusCode}）',
         });
@@ -370,6 +396,12 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       });
       return;
     }
+    if (result == 'delete') {
+      setState(() => chatRevision++);
+      postSearch.clear();
+      timeSearch.clear();
+      exchangeSearch.clear();
+    }
     clearSession();
     if (biometricSaved) await discardInvalidBiometricSession();
     if (!mounted) return;
@@ -419,7 +451,14 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
     final key = draftKey(account!['id'].toString());
     await prefs.setString(key, jsonEncode(payload));
     if (mounted) setState(() => draft = payload);
-    await api('posts', payload);
+    try {
+      await api('posts', payload);
+    } on _BlockedContentException {
+      // The server rejected publication. Keep the input editable.
+      await prefs.remove(key);
+      if (mounted) setState(() => draft = null);
+      rethrow;
+    }
     await prefs.remove(key);
     if (mounted) {
       setState(() {
@@ -447,6 +486,12 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
     appBar: AppBar(
       title: const Text('社區救生圈'),
       actions: [
+        if (tab != 3)
+          IconButton(
+            tooltip: '內容安全',
+            onPressed: openContentSafety,
+            icon: const Icon(Icons.shield_outlined),
+          ),
         if (tab != 3)
           IconButton(
             tooltip: '更新',
@@ -508,7 +553,28 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
                 feed(),
                 timeBank(),
                 exchangeBoard(),
-                LifebuoyChat(active: tab == 3),
+                LifebuoyChat(
+                  key: ValueKey(chatRevision),
+                  active: tab == 3,
+                  memberId: account?['id'] as String?,
+                  signIn: signin,
+                  prepareMessage: (text) async {
+                    final messageId = newId();
+                    final result = await api('chat/messages', {
+                      'message_id': messageId,
+                      'text': text,
+                    });
+                    return (
+                      messageId: messageId,
+                      senderId: result['sender_id'] as String,
+                    );
+                  },
+                  report: submitContentReport,
+                  checkModeration: (keys, senders) => api('moderation/chat', {
+                    'keys': keys,
+                    'senders': senders,
+                  }),
+                ),
               ],
             ),
           ),

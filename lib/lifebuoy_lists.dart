@@ -35,6 +35,7 @@ class _ListCard extends StatelessWidget {
     this.label,
     this.details,
     this.action,
+    this.menu,
     this.tone,
   });
 
@@ -43,6 +44,7 @@ class _ListCard extends StatelessWidget {
   final String? label;
   final Widget? details;
   final Widget? action;
+  final Widget? menu;
   final Color? tone;
 
   @override
@@ -97,6 +99,7 @@ class _ListCard extends StatelessWidget {
                 ],
               ),
             ),
+            ?menu,
           ],
         ),
       ),
@@ -350,6 +353,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
               ? ' · 我的貼文'
               : ''}',
       title: post['title'].toString(),
+      menu: mine ? null : listingSafetyMenu(post, item: false),
       details: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

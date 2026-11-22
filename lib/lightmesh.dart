@@ -15511,6 +15511,14 @@ class MeshChatService extends ChangeNotifier {
     unawaited(_saveBlockedUsers());
   }
 
+  void purgeMessages(Set<String> ids) {
+    if (ids.isEmpty) return;
+    _seenMessageIds.addAll(ids);
+    _messages.removeWhere((message) => ids.contains(message.id));
+    if (ids.contains(_lastIncomingMessage?.id)) _lastIncomingMessage = null;
+    notifyListeners();
+  }
+
   void deleteMessageFromFeed(String messageId) {
     if (!_hideMessage(messageId, notify: false)) {
       _status = '這則訊息已不在信息流。';
@@ -15770,7 +15778,11 @@ class MeshChatService extends ChangeNotifier {
     _announcePresenceBurst();
   }
 
-  Future<bool> sendMessage(String text) async {
+  Future<bool> sendMessage(
+    String text, {
+    String? authorizedMessageId,
+    String? authorizedSenderId,
+  }) async {
     final clean = text.trim();
     if (clean.isEmpty) {
       return false;
@@ -15793,13 +15805,13 @@ class MeshChatService extends ChangeNotifier {
     }
 
     final room = activeRoom;
-    final messageId = _newId('msg');
+    final messageId = authorizedMessageId ?? _newId('msg');
     final sentAt = DateTime.now();
     final message = MeshMessage(
       id: messageId,
       roomId: room.id,
       roomName: room.name,
-      senderId: _nodeId,
+      senderId: authorizedSenderId ?? _nodeId,
       senderName: identityName,
       senderDisplayName: _displayName,
       senderUserName: _userName,

@@ -210,7 +210,9 @@ class _AccountPasswordDialogState extends State<_AccountPasswordDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (widget.deleting)
-              const Text('刪除後無法登入或恢復帳戶，刊登會下架，未完成交易會取消。已完成的共同交易將以匿名身分保留。')
+              const Text(
+                '刪除後無法登入或恢復帳戶。刊登原文、評分及與帳戶連結的光網訊息會移除，待完成交易會取消。共同交易會保留時數及狀態，並移除你的顯示名稱和交收地點。舊版訪客訊息與其他光網 App 已收到的副本可能仍然存在。',
+              )
             else
               const Text('更新密碼後，所有裝置都需要重新登入。'),
             TextFormField(

@@ -1,5 +1,6 @@
 import { fail, rows, type Actor, type Db } from './database'
 import { hongKongDistrictIds } from './districts'
+import { reportQueue } from './moderation'
 
 function memberDistrictIds(actor: Actor) {
   return [...new Set<string>([...hongKongDistrictIds, actor.community_id])]
@@ -52,7 +53,7 @@ export async function adminMemberPage(db: Db, actor: Actor, input: Record<string
 
 export async function adminDashboard(db: Db, actor: Actor) {
   const scope = [actor.community_id]
-  const [[community], members, services, ledger, items, exchanges, disputes, audit, districts] = await Promise.all([
+  const [[community], members, services, ledger, items, exchanges, disputes, audit, districts, reports] = await Promise.all([
     rows<{ name: string }>(db, 'SELECT name FROM communities WHERE id=?', scope),
     rows(db, `SELECT m.id,m.name,m.role,original.balance FROM members m
       JOIN members original ON original.community_id=COALESCE(m.origin_community_id,m.community_id) AND original.id=m.id
@@ -69,7 +70,7 @@ export async function adminDashboard(db: Db, actor: Actor) {
       WHERE j.community_id=? ORDER BY j.created_at DESC,j.service_id,j.kind LIMIT 100`, scope),
     rows(db, `SELECT i.*,m.name AS owner_name FROM items i
       JOIN members m ON (m.community_id,m.id)=(i.community_id,i.owner_id)
-      WHERE i.community_id=? ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, scope),
+      WHERE i.community_id=? AND m.account_state<>'deleted' ORDER BY i.created_at DESC,i.id DESC LIMIT 100`, scope),
     rows(db, `SELECT e.id,e.offered_id,e.wanted_id,e.proposer_id,e.owner_id,e.meeting,e.state,e.expires_at,
       e.completed_at,e.expires_at<=UTC_TIMESTAMP(6) AS expired,
       offered.title AS offered_title,wanted.title AS wanted_title,p.name AS proposer_name,o.name AS owner_name
@@ -97,6 +98,7 @@ export async function adminDashboard(db: Db, actor: Actor) {
       LEFT JOIN items w ON (w.community_id,w.id)=(e.community_id,e.wanted_id)
       WHERE a.community_id=? ORDER BY a.id DESC LIMIT 100`, scope),
     adminMemberDistricts(db, actor),
+    reportQueue(db, actor),
   ])
-  return { community: community?.name, members, services, ledger, items, exchanges, disputes, audit, districts }
+  return { community: community?.name, members, services, ledger, items, exchanges, disputes, audit, districts, reports }
 }

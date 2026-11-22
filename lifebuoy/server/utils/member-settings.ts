@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { PoolConnection } from 'mysql2/promise'
 import { boundedText, fail, rows, type Membership } from './database'
+import { eraseMemberAccount } from './account-erasure'
 import { requiredDistrict } from './districts'
 import { passwordHash, validPassword, verifyCurrentPassword } from './member-auth'
 
@@ -43,29 +44,15 @@ export async function changeMemberSettings(db: PoolConnection, member: Membershi
   if (action !== 'password' && action !== 'delete') fail(404, 'unknown_action')
   if (member.role !== 'member') fail(403, 'member_account_required')
   await verifyCurrentPassword(db, member, input.current_password)
-  if (action === 'password') {
-    if (!validPassword(input.new_password)) fail(400, 'invalid_password')
-    const salt = randomBytes(16)
-    const hash = await passwordHash(input.new_password, salt)
-    await db.execute('UPDATE member_credentials SET password_salt=?,password_hash=? WHERE community_id=? AND member_id=?',
-      [salt, hash, ...current])
-  } else {
-    const memberships = await rows<Membership>(db, `SELECT community_id,id FROM members WHERE ${membershipScope}`, identity)
-    for (const membership of memberships) {
-      await withdrawListings(db, membership)
-      const district = membership.community_id
-      const id = membership.id
-      await db.execute(`UPDATE services SET state='cancelled' WHERE community_id=? AND (payer_id=? OR provider_id=?)
-        AND state IN ('agreement','pending')`, [district, id, id])
-      await db.execute(`UPDATE items i JOIN exchanges e ON e.community_id=i.community_id AND e.id=i.reserved_by
-        SET i.reserved_by=NULL WHERE e.community_id=? AND (e.proposer_id=? OR e.owner_id=?) AND e.state='reserved'`,
-        [district, id, id])
-      await db.execute(`UPDATE exchanges SET state='cancelled' WHERE community_id=? AND (proposer_id=? OR owner_id=?)
-        AND state IN ('proposed','reserved')`, [district, id, id])
-    }
-    await db.execute('DELETE FROM member_credentials WHERE community_id=? AND member_id=?', current)
-    await db.execute(`UPDATE members SET name='已刪除的用戶',account_state='deleted',token_hash=NULL WHERE ${membershipScope}`, identity)
+  if (action === 'delete') {
+    await eraseMemberAccount(db, member)
+    return { ok: true }
   }
+  if (!validPassword(input.new_password)) fail(400, 'invalid_password')
+  const salt = randomBytes(16)
+  const hash = await passwordHash(input.new_password, salt)
+  await db.execute('UPDATE member_credentials SET password_salt=?,password_hash=? WHERE community_id=? AND member_id=?',
+    [salt, hash, ...current])
   await db.execute('DELETE FROM member_sessions WHERE community_id=? AND member_id=?', current)
   return { ok: true }
 }

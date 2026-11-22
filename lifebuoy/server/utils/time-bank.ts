@@ -1,6 +1,7 @@
 import { type PoolConnection } from 'mysql2/promise'
 import { type Actor, audit, boundedText, fail, minutes, rows, uuid } from './database'
 import { blockDispute } from './ratings'
+import { requireAllowedContent } from './moderation'
 
 export type HelpPost = {
   id: string
@@ -31,6 +32,7 @@ export async function publishHelp(db: PoolConnection, actor: Actor, input: Input
   if (kind !== 'request' && kind !== 'offer' && kind !== 'free') fail(400, 'invalid_kind')
   const title = boundedText(input.title, 120, 'invalid_title')
   const area = boundedText(input.area, 80, 'invalid_area')
+  requireAllowedContent(title, area)
   const duration = kind === 'free' ? null : minutes(input.minutes)
   await db.execute(
     `INSERT INTO help_posts (community_id, id, author_id, kind, title, area, minutes)

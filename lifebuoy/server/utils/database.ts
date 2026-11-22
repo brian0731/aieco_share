@@ -11,7 +11,7 @@ export type Membership = Actor & {
 }
 let pool: Pool | undefined
 
-export function database(event: H3Event) {
+export function database(event?: H3Event) {
   const { databaseUrl } = useRuntimeConfig(event)
   if (!databaseUrl) fail(503, 'database_unavailable')
   return pool ??= mysql.createPool({ uri: databaseUrl, connectionLimit: 10, timezone: 'Z' })
@@ -62,7 +62,7 @@ export function bearerDigest(event: H3Event) {
   return createHash('sha256').update(token).digest()
 }
 
-export async function jsonInput(event: H3Event): Promise<Record<string, unknown>> {
+export async function jsonInput(event: H3Event, maxBytes = 8192): Promise<Record<string, unknown>> {
   if (getHeader(event, 'content-type')?.split(';')[0].trim() !== 'application/json') {
     fail(415, 'json_required')
   }
@@ -70,7 +70,7 @@ export async function jsonInput(event: H3Event): Promise<Record<string, unknown>
   const chunks: Buffer[] = []
   for await (const chunk of event.node.req.iterator({ destroyOnReturn: false })) {
     size += chunk.length
-    if (size > 8192) {
+    if (size > maxBytes) {
       event.node.req.resume()
       fail(413, 'body_too_large')
     }

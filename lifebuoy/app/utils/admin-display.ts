@@ -3,6 +3,10 @@ type Column = [key: string, label: string]
 type Section = { label: string, icon: string, columns: Column[] }
 
 export const sections = {
+  reports: { label: '內容舉報', icon: 'i-lucide-flag', columns: [
+    ['kind', '內容類型'], ['target_name', '發佈者'], ['district', '地區'],
+    ['reason', '舉報原因'], ['reporter_name', '舉報人'], ['state', '狀態'], ['created_at', '舉報時間'],
+  ] },
   disputes: { label: '申訴', icon: 'i-lucide-message-square-warning', columns: [
     ['trade_title', '涉及事項'], ['reporter_name', '申訴人'], ['kind', '類型'],
     ['reason', '申訴理由'], ['outcome', '處理狀態'], ['created_at', '提出時間'],
@@ -45,6 +49,7 @@ const statuses: Record<string, string> = {
   completed: '已完成', available: '可交換', restore: '已恢復評價', exclude: '已排除評價',
   unresolved: '待處理', member: '會員', admin: '管理員', settlement: '服務入帳',
   reversal: '相抵更正', service: '服務', exchange: '物品交收',
+  post: '互助貼文', item: '交換刊登', chat: '光網訊息', dismissed: '已駁回', removed: '已下架',
 }
 
 const auditLabels: Record<string, string> = {
@@ -55,6 +60,7 @@ const auditLabels: Record<string, string> = {
   service_dispute_open: '提出服務申訴', exchange_dispute_open: '提出交收申訴',
   service_dispute_restore: '恢復服務評價', exchange_dispute_restore: '恢復交收評價',
   service_dispute_exclude: '排除服務評價', exchange_dispute_exclude: '排除交收評價',
+  content_report_removed: '下架遭舉報內容', content_report_dismissed: '駁回內容舉報',
 }
 
 const date = new Intl.DateTimeFormat('zh-HK', {
@@ -71,6 +77,7 @@ export function statusKey(section: SectionKey, row: AdminRow) {
 
 export function displayValue(section: SectionKey, row: AdminRow, key: string) {
   const value = row[key]
+  if (section === 'reports' && key === 'state' && value === 'pending') return '待處理'
   if (key === 'state' || key === 'outcome') return statuses[statusKey(section, row)] ?? '未知狀態'
   if (value == null || value === '') return '—'
   if (key === 'role' || key === 'kind') return statuses[String(value)] ?? '未知類型'

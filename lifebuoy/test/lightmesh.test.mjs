@@ -70,7 +70,8 @@ test('Lightmesh directory and WebSocket relay', { timeout: 30_000 }, async t => 
   b.addEventListener('message', event => receivedB.push(event.data))
   const payload = JSON.stringify({
     kind: 'aieco.light.chat.v1', app: 'lifebuoy',
-    messageId: 'a', roomId: 'public', _lightBridgePath: ['network-a'], extra: '互助',
+    messageId: 'a', senderId: 'test-peer', senderName: '街坊',
+    roomId: 'public', text: '互助', _lightBridgePath: ['network-a'], extra: '互助',
   })
   const reply = payload.replace('"a"', '"b"')
   a.send('not-json')

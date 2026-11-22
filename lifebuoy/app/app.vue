@@ -52,6 +52,7 @@ const columns = computed<TableColumn<AdminRow>[]>(() => {
   const key = section.value
   if (!key) return []
   return [
+    { title: '待處理內容舉報', amount: data.reports.filter(row => row.state === 'pending').length, icon: sections.reports.icon, to: 'reports' },
     ...sections[key].columns.map(([field, header]) => ({
       id: field, header, accessorFn: (row: AdminRow) => displayValue(key, row, field),
     })),
@@ -139,6 +140,7 @@ const errorText: Record<string, string> = {
   insufficient_balance: '會員餘額不足以執行相抵更正。',
   invalid_transition: '紀錄狀態已變更，請更新後重試。',
   retry_transaction: '資料正在更新，請稍後重試。',
+  report_not_found: '找不到這筆內容舉報。',
 }
 
 function storeSession(value: string) {
@@ -202,6 +204,17 @@ function actions(key: SectionKey, row: AdminRow): DropdownMenuItem[] {
   const items: DropdownMenuItem[] = [{
     label: '查看詳情', icon: 'i-lucide-file-text', onSelect: () => { record.value = row; recordOpen.value = true },
   }]
+  if (key === 'reports' && row.state === 'pending') {
+    for (const [outcome, label, icon] of [
+      ['removed', '下架內容', 'i-lucide-eye-off'],
+      ['dismissed', '駁回舉報', 'i-lucide-check'],
+    ] as const) {
+      items.push({ label, icon, onSelect: () => prepare({
+        label, subject: displayValue(key, row, 'target_name'),
+        path: `reports/${row.id}/resolve`, body: { outcome }, needsReason: true,
+      }) })
+    }
+  }
   if (key === 'disputes') {
     const collection = row.kind === 'service' ? 'services' : 'exchanges'
     const path = `${collection}/${row.trade_id}/resolve`
@@ -373,6 +386,12 @@ useHead({ title: '社區救生圈管理', htmlAttrs: { lang: 'zh-Hant-HK' } })
           </template>
           <template v-if="record.resolution_reason">
             <dt class="text-muted">處理原因</dt><dd class="wrap-break-word">{{ record.resolution_reason }}</dd>
+          </template>
+          <template v-if="section === 'reports'">
+            <dt class="text-muted">內容</dt><dd class="whitespace-pre-wrap wrap-break-word">{{ record.content }}</dd>
+            <template v-if="record.kind === 'chat'">
+              <dt class="text-muted">來源</dt><dd>舉報人裝置的訊息副本</dd>
+            </template>
           </template>
           <template v-if="record.trade_id || record.service_id || record.id">
             <dt class="text-muted">參考編號</dt><dd class="font-mono text-xs wrap-break-word">{{ record.trade_id || record.service_id || record.id }}</dd>

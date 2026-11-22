@@ -6,18 +6,23 @@ import { loginMember, loginRateLimit, registerMember } from '../../utils/member-
 import { hongKongDistrictIds } from '../../utils/districts'
 import { adminDashboard, adminMemberPage } from '../../utils/admin-dashboard'
 import { changeMemberSettings } from '../../utils/member-settings'
+import { reportContent, resolveReport } from '../../utils/moderation'
+import { checkChatModeration, prepareMemberMessage } from '../../utils/member-chat'
 
 async function publicBoard(db: Db, communities: readonly string[]) {
   const districtParameters = communities.map(() => '?').join(',')
   const [posts, items] = await Promise.all([
     rows(db, `SELECT p.id,p.community_id,p.kind,p.title,p.area,p.minutes,p.author_id,m.name AS author,
+      COALESCE(m.origin_community_id,m.community_id) AS author_origin,
       EXISTS(SELECT 1 FROM services s WHERE s.community_id=p.community_id AND s.post_id=p.id) AS matched
       FROM help_posts p JOIN members m ON (m.community_id,m.id)=(p.community_id,p.author_id)
       WHERE p.community_id IN (${districtParameters}) AND p.withdrawn=FALSE
       ORDER BY p.created_at DESC,p.community_id,p.id DESC LIMIT 100`, [...communities]),
-    rows(db, `SELECT id,community_id,owner_id,title,wanted,area,(reserved_by IS NOT NULL) AS reserved
-      FROM items WHERE community_id IN (${districtParameters}) AND exchanged=0 AND withdrawn=FALSE
-      ORDER BY created_at DESC,community_id,id DESC LIMIT 100`, [...communities]),
+    rows(db, `SELECT i.id,i.community_id,i.owner_id,i.title,i.wanted,i.area,(i.reserved_by IS NOT NULL) AS reserved,
+      COALESCE(m.origin_community_id,m.community_id) AS owner_origin,m.name AS owner
+      FROM items i JOIN members m ON (m.community_id,m.id)=(i.community_id,i.owner_id)
+      WHERE i.community_id IN (${districtParameters}) AND i.exchanged=0 AND i.withdrawn=FALSE
+      ORDER BY i.created_at DESC,i.community_id,i.id DESC LIMIT 100`, [...communities]),
   ])
   return { posts, items, fetchedAt: new Date().toISOString() }
 }
@@ -29,6 +34,10 @@ export default defineEventHandler(async (event) => {
   if (event.method === 'GET' && resource === 'board' && !id) {
     setResponseHeader(event, 'Cache-Control', 'no-store')
     return publicBoard(db, [...hongKongDistrictIds, 'demo'])
+  }
+  if (event.method === 'POST' && resource === 'moderation' && id === 'chat' && !action) {
+    setResponseHeader(event, 'Cache-Control', 'no-store')
+    return checkChatModeration(db, await jsonInput(event))
   }
   if (event.method === 'POST' && resource === 'auth' && !action) {
     setResponseHeader(event, 'Cache-Control', 'no-store')
@@ -109,16 +118,30 @@ export default defineEventHandler(async (event) => {
     }
   }
   if (event.method !== 'POST') fail(404, 'unknown_route')
-  const input = await jsonInput(event)
+  const input = await jsonInput(event, resource === 'reports' && !id ? 32768 : undefined)
+  if (resource === 'reports' && !id && !action) {
+    return transaction(db, async conn => {
+      await lockMembership(conn, actor)
+      const current = await authenticate(event, conn)
+      if (current.id !== actor.id || current.community_id !== actor.community_id) fail(401, 'invalid_token')
+      return reportContent(conn, actor, input)
+    })
+  }
+  if (resource === 'reports' && id && action === 'resolve') {
+    if (actor.role !== 'admin') fail(403, 'admin_required')
+    return transaction(db, conn => resolveReport(conn, actor, id, input))
+  }
   const accountAction = resource === 'account' && id && !action
   const postingAction = resource === 'posts' || resource === 'items' || (resource === 'exchanges' && !id)
   if (resource === 'account' && (id === 'password' || id === 'delete') && !action) loginRateLimit(event)
-  if (accountAction || postingAction) {
+  const chatAction = resource === 'chat' && id === 'messages' && !action
+  if (accountAction || postingAction || chatAction) {
     return transaction(db, async conn => {
       const member = await lockMembership(conn, actor)
       const current = await authenticate(event, conn)
       if (current.id !== actor.id || current.community_id !== community) fail(401, 'invalid_token')
       if (accountAction) return changeMemberSettings(conn, member, id, input)
+      if (chatAction) return prepareMemberMessage(conn, member, input)
       if (resource === 'posts' && !id) return publishHelp(conn, actor, input)
       if (resource === 'posts' && action === 'match') return matchHelp(conn, actor, uuid(id))
       if (resource === 'items' && !id) return publishItem(conn, actor, input)

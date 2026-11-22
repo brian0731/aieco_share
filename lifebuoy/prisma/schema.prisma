@@ -301,3 +301,61 @@ enum services_state {
   cancelled
   reversed
 }
+
+model content_reports {
+  id                    String                @id @db.VarChar(36)
+  kind                  content_reports_kind
+  target_key            String                @db.Char(64)
+  target_id             String                @db.VarChar(128)
+  target_community_id   String?               @db.VarChar(36)
+  chat_sender_key       String?               @db.Char(64)
+  target_name           String                @db.VarChar(200)
+  content               String                @db.Text
+  reporter_community_id String                @db.VarChar(36)
+  reporter_id           String                @db.VarChar(36)
+  reason                String                @db.VarChar(500)
+  state                 content_reports_state @default(pending)
+  resolution_reason     String?               @db.VarChar(500)
+  created_at            DateTime              @default(now()) @db.DateTime(6)
+  resolved_at           DateTime?             @db.DateTime(6)
+
+  @@unique([reporter_community_id, reporter_id, kind, target_key], map: "unique_report")
+  @@index([kind, target_key, state], map: "report_target")
+  @@index([state, created_at], map: "report_queue")
+  @@index([chat_sender_key], map: "reported_chat_sender")
+}
+
+model member_chat_identities {
+  sender_key   String                 @id @db.Char(64)
+  sender_id    String?                @db.VarChar(64)
+  community_id String?                @db.VarChar(36)
+  member_id    String?                @db.VarChar(36)
+  messages     member_chat_messages[]
+
+  @@unique([community_id, member_id], map: "member_chat_owner")
+}
+
+model member_chat_messages {
+  sender_key  String                 @db.Char(64)
+  message_id  String                 @db.Char(36)
+  message_key String                 @db.Char(64)
+  identity    member_chat_identities @relation(fields: [sender_key], references: [sender_key], onDelete: NoAction, onUpdate: NoAction, map: "member_chat_messages_ibfk_1")
+
+  @@id([sender_key, message_id])
+}
+
+model removed_chat_messages {
+  message_key String @id @db.Char(64)
+}
+
+enum content_reports_kind {
+  post
+  item
+  chat
+}
+
+enum content_reports_state {
+  pending
+  dismissed
+  removed
+}

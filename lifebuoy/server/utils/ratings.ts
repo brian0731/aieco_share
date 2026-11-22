@@ -45,6 +45,11 @@ export async function changeRating(db: PoolConnection, actor: Actor, kind: Trade
     return { outcome }
   }
   if (actor.id !== trade.first && actor.id !== trade.second) fail(403, 'participant_required')
+  const subject = actor.id === trade.first ? trade.second : trade.first
+  const participants = await rows<{ account_state: string }>(db,
+    'SELECT account_state FROM members WHERE community_id=? AND id IN (?,?) ORDER BY id FOR UPDATE',
+    [community, actor.id, subject])
+  if (participants.some(member => member.account_state === 'deleted')) fail(409, 'rating_unavailable')
   if (action === 'dispute') {
     if (trade.state === 'cancelled' || trade.state === 'reversed') fail(409, 'cannot_dispute')
     const reason = boundedText(input.reason, 500, 'reason_required')
@@ -69,7 +74,6 @@ export async function changeRating(db: PoolConnection, actor: Actor, kind: Trade
   if (trade.state !== (kind === 'service' ? 'settled' : 'completed') || !trade.within_window) {
     fail(409, 'rating_unavailable')
   }
-  const subject = actor.id === trade.first ? trade.second : trade.first
   await db.execute('INSERT INTO ratings (community_id,kind,trade_id,reviewer_id,subject_id,stars) VALUES (?,?,?,?,?,?)',
     [community,kind,id,actor.id,subject,stars])
   return { stars }

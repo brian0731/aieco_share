@@ -5,8 +5,75 @@ import 'package:aieco_share/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('Blocking a listing author hides both types of listings', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.pumpWidget(const LifebuoyApp());
+    await tester.pumpAndSettle();
+    final dynamic state = tester.state(find.byType(LifebuoyHome));
+    state.setState(() {
+      state.error = null;
+      state.home = <String, dynamic>{
+        'posts': [
+          <String, dynamic>{
+            'id': 'post',
+            'kind': 'free',
+            'title': '借出雨傘',
+            'area': '北區',
+            'author': '街坊甲',
+            'author_id': 'author',
+            'community_id': 'hk-north',
+          },
+        ],
+        'items': [
+          <String, dynamic>{
+            'id': 'item',
+            'title': '交換故事書',
+            'wanted': '桌遊',
+            'area': '北區',
+            'owner': '街坊甲',
+            'owner_id': 'author',
+            'community_id': 'hk-north',
+          },
+        ],
+      };
+    });
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byTooltip('貼文安全選項'),
+      160,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const PageStorageKey('help-board')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.tap(find.byTooltip('貼文安全選項'));
+    await tester.pumpAndSettle();
+    expect(find.text('舉報貼文'), findsOneWidget);
+    await tester.tap(find.text('封鎖用戶'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '封鎖'));
+    await tester.pumpAndSettle();
+    expect(find.text('借出雨傘'), findsNothing);
+
+    await tester.tap(find.text('交換').hitTestable());
+    await tester.pumpAndSettle();
+    expect(find.text('交換故事書'), findsNothing);
+    await tester.tap(find.byTooltip('內容安全'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('解除封鎖'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('關閉'));
+    await tester.pumpAndSettle();
+    expect(find.text('交換故事書'), findsOneWidget);
+  });
+
   testWidgets('Each main tab displays its bundled art on a narrow phone', (
     tester,
   ) async {

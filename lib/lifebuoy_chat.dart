@@ -1,16 +1,69 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import 'lifebuoy_chat_connection.dart';
 import 'lifebuoy_illustration.dart';
 import 'lifebuoy_search.dart';
-import 'lightmesh.dart' show MeshChatService, MeshMessageBubble;
+import 'lightmesh.dart'
+    show MeshChatService, MeshContentModeration, MeshMessage, MeshMessageBubble;
+
+Future<bool> confirmSafetyBlock(BuildContext context, String name) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('封鎖用戶？'),
+        content: Text('這部裝置會隱藏 $name 在這個功能發佈的內容。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('封鎖'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
+
+String _messageKey(MeshMessage message) => sha256
+    .convert(
+      utf8.encode(
+        jsonEncode([
+          message.id.trim(),
+          message.senderId.trim(),
+          message.text.trim(),
+        ]),
+      ),
+    )
+    .toString();
+
+String _senderKey(MeshMessage message) =>
+    sha256.convert(utf8.encode(message.senderId.trim())).toString();
 
 class LifebuoyChat extends StatefulWidget {
-  const LifebuoyChat({super.key, required this.active});
+  const LifebuoyChat({
+    super.key,
+    required this.active,
+    this.report,
+    this.checkModeration,
+    this.prepareMessage,
+    this.signIn,
+    this.memberId,
+  });
 
   final bool active;
+  final Future<bool> Function(Map<String, dynamic>)? report;
+  final Future<Map<String, dynamic>> Function(List<String>, List<String>)?
+  checkModeration;
+  final Future<({String messageId, String senderId})> Function(String)?
+  prepareMessage;
+  final Future<void> Function()? signIn;
+  final String? memberId;
 
   @override
   State<LifebuoyChat> createState() => _LifebuoyChatState();
@@ -37,18 +90,151 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   final composer = TextEditingController();
   final search = TextEditingController();
   bool busy = false;
+  bool checkingModeration = false;
+  Timer? moderationTimer;
+  final removedMessages = <String>{};
+  final removedSenders = <String>{};
 
   @override
   void initState() {
     super.initState();
-    if (widget.active) joinPublicRoom();
+    if (widget.active) activateChat();
   }
 
   @override
   void didUpdateWidget(LifebuoyChat oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !oldWidget.active) joinPublicRoom();
+    if (oldWidget.memberId != null && oldWidget.memberId != widget.memberId) {
+      composer.clear();
+      search.clear();
+    }
+    if (widget.active && !oldWidget.active) activateChat();
+    if (!widget.active) moderationTimer?.cancel();
   }
+
+  void activateChat() {
+    joinPublicRoom();
+    if (widget.checkModeration != null) {
+      unawaited(refreshModeration());
+      moderationTimer = Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => refreshModeration(),
+      );
+    }
+  }
+
+  Future<void> refreshModeration() async {
+    final check = widget.checkModeration;
+    if (check == null || checkingModeration) return;
+    final messages = mesh.activeRoomMessages
+        .where((message) => !wasRemoved(message))
+        .toList();
+    if (messages.isEmpty) return;
+    checkingModeration = true;
+    try {
+      for (var offset = 0; offset < messages.length; offset += 50) {
+        final batch = messages.skip(offset).take(50).toList();
+        final result = await check(
+          batch.map(_messageKey).toList(),
+          batch
+              .where(
+                (message) => message.senderId.startsWith('lifebuoy-member-'),
+              )
+              .map(_senderKey)
+              .toSet()
+              .toList(),
+        );
+        if (!mounted) return;
+        final removed =
+            (result['removed'] as List?)?.whereType<String>().toSet() ?? {};
+        final senders =
+            (result['removed_senders'] as List?)?.whereType<String>().toSet() ??
+            {};
+        if (!removedMessages.containsAll(removed) ||
+            !removedSenders.containsAll(senders)) {
+          setState(() {
+            removedMessages.addAll(removed);
+            removedSenders.addAll(senders);
+          });
+          mesh.purgeMessages(
+            mesh.activeRoomMessages
+                .where(wasRemoved)
+                .map((message) => message.id)
+                .toSet(),
+          );
+        }
+      }
+    } catch (_) {
+      // Keep known removals while the moderation API is temporarily unavailable.
+    } finally {
+      checkingModeration = false;
+    }
+  }
+
+  bool wasRemoved(MeshMessage message) =>
+      (removedMessages.isNotEmpty &&
+          removedMessages.contains(_messageKey(message))) ||
+      (removedSenders.isNotEmpty &&
+          removedSenders.contains(_senderKey(message)));
+
+  Future<void> reportMessage(MeshMessage message) async {
+    final report = widget.report;
+    if (report == null) return;
+    final submitted = await report({
+      'kind': 'chat',
+      'target_id': message.id,
+      'sender_id': message.senderId,
+      'sender_name': message.senderName,
+      'content': message.text,
+    });
+    if (submitted && mounted) mesh.deleteMessageFromFeed(message.id);
+  }
+
+  Future<void> blockSender(String id, String name) async {
+    if (await confirmSafetyBlock(context, name) && mounted) {
+      mesh.blockUser(id, userName: name);
+    }
+  }
+
+  Future<void> showChatSafety() => showDialog<void>(
+    context: context,
+    builder: (dialog) => AlertDialog(
+      title: const Text('聊天安全'),
+      scrollable: true,
+      content: ListenableBuilder(
+        listenable: mesh,
+        builder: (_, _) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('請勿發送騷擾、仇恨、威脅、色情或違法內容。用訊息旁的選單舉報，亦可聯絡管理員。'),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: SelectableText('info@aieco.hk'),
+            ),
+            const Divider(),
+            Text(mesh.blockedUsers.isEmpty ? '尚未封鎖聊天用戶' : '已封鎖的聊天用戶'),
+            for (final user in mesh.blockedUsers)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(user.name),
+                trailing: TextButton(
+                  onPressed: () =>
+                      mesh.unblockUser(user.id, userName: user.name),
+                  child: const Text('解除封鎖'),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialog),
+          child: const Text('關閉'),
+        ),
+      ],
+    ),
+  );
 
   void joinPublicRoom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -72,6 +258,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
 
   @override
   void dispose() {
+    moderationTimer?.cancel();
     mesh.dispose();
     composer.dispose();
     search.dispose();
@@ -79,9 +266,34 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
   }
 
   Future<void> sendMessage() => operate(() async {
-    final text = composer.text;
-    if (await mesh.sendMessage(text) && mounted && composer.text == text) {
-      composer.clear();
+    final draft = composer.text;
+    final text = draft.trim();
+    if (text.isEmpty) return;
+    final prepare = widget.prepareMessage;
+    if (prepare != null && widget.memberId == null) {
+      await widget.signIn?.call();
+      return;
+    }
+    final member = widget.memberId;
+    try {
+      final authorization = await prepare?.call(text);
+      if (!mounted || widget.memberId != member) return;
+      final sent = await mesh.sendMessage(
+        text,
+        authorizedMessageId: authorization?.messageId,
+        authorizedSenderId: authorization?.senderId,
+      );
+      if (sent && mounted && composer.text == draft) composer.clear();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is FormatException ? error.message : '未能傳送訊息，請稍後再試。',
+            ),
+          ),
+        );
+      }
     }
   });
 
@@ -95,7 +307,13 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
     listenable: mesh,
     builder: (context, _) {
       final room = mesh.activeRoom;
-      final messages = mesh.activeRoomMessages;
+      final messages = mesh.activeRoomMessages
+          .where(
+            (message) =>
+                MeshContentModeration.check(message.senderName).allowed &&
+                !wasRemoved(message),
+          )
+          .toList();
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -160,6 +378,11 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                               '${messages.length} 則',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
+                            IconButton(
+                              tooltip: '聊天安全',
+                              onPressed: showChatSafety,
+                              icon: const Icon(Icons.shield_outlined, size: 20),
+                            ),
                           ],
                         ),
                       ),
@@ -172,7 +395,7 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                         ),
                       ),
                       const Divider(height: 1, color: Color(0xffe0e5de)),
-                      Expanded(child: messageList()),
+                      Expanded(child: messageList(messages)),
                       if (mesh.isRunning)
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
@@ -220,9 +443,9 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
     },
   );
 
-  Widget messageList() {
+  Widget messageList(List<MeshMessage> roomMessages) {
     final query = search.text;
-    final messages = mesh.activeRoomMessages.reversed
+    final messages = roomMessages.reversed
         .where(
           (message) =>
               matchesLifebuoySearch(query, [message.text, message.senderName]),
@@ -269,6 +492,8 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
         return MeshMessageBubble(
           key: ValueKey(message.id),
           message: message,
+          onReport: widget.report == null ? null : reportMessage,
+          onBlockUser: blockSender,
           onDelete: (message) => mesh.deleteMessageFromFeed(message.id),
         );
       },
