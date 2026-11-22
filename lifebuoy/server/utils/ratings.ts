@@ -28,15 +28,15 @@ export async function blockDispute(db: PoolConnection, actor: Actor, kind: Trade
   if (dispute && !dispute.outcome) fail(409, 'trade_disputed')
 }
 
-export async function changeRating(db: PoolConnection, actor: Actor, kind: TradeKind, id: string, action: string, input: Input) {
-  const trade = await lockTrade(db, actor, kind, id)
-  const community = actor.community_id
+export async function changeRating(db: PoolConnection, actor: Actor, kind: TradeKind, id: string, action: string, input: Input, community = actor.community_id) {
+  const tradeActor = { ...actor, community_id: community }
+  const trade = await lockTrade(db, tradeActor, kind, id)
   if (action === 'resolve') {
     if (actor.role !== 'admin') fail(403, 'admin_required')
     const reason = boundedText(input.reason, 500, 'reason_required')
     const outcome = input.outcome
     if (outcome !== 'restore' && outcome !== 'exclude') fail(400, 'invalid_outcome')
-    const dispute = await disputeFor(db, actor, kind, id)
+    const dispute = await disputeFor(db, tradeActor, kind, id)
     if (!dispute) fail(404, 'dispute_not_found')
     if (dispute.outcome === outcome && dispute.resolution_reason === reason) return { outcome }
     await db.execute('UPDATE disputes SET outcome=?,resolution_reason=? WHERE community_id=? AND kind=? AND trade_id=?',

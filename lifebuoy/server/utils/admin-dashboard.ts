@@ -6,6 +6,10 @@ function memberDistrictIds(actor: Actor) {
   return [...new Set<string>([...hongKongDistrictIds, actor.community_id])]
 }
 
+export function adminDisputeDistrictIds(actor: Actor) {
+  return [...new Set([...memberDistrictIds(actor), 'demo'])]
+}
+
 async function adminMemberDistricts(db: Db, actor: Actor) {
   const ids = memberDistrictIds(actor)
   const districts = await rows<{ id: string, name: string, count: number }>(db, `
@@ -53,6 +57,7 @@ export async function adminMemberPage(db: Db, actor: Actor, input: Record<string
 
 export async function adminDashboard(db: Db, actor: Actor) {
   const scope = [actor.community_id]
+  const disputeDistricts = adminDisputeDistrictIds(actor)
   const [[community], members, services, ledger, items, exchanges, disputes, audit, districts, reports] = await Promise.all([
     rows<{ name: string }>(db, 'SELECT name FROM communities WHERE id=?', scope),
     rows(db, `SELECT m.id,m.name,m.role,original.balance FROM members m
@@ -79,15 +84,17 @@ export async function adminDashboard(db: Db, actor: Actor) {
       JOIN members p ON (p.community_id,p.id)=(e.community_id,e.proposer_id)
       JOIN members o ON (o.community_id,o.id)=(e.community_id,e.owner_id)
       WHERE e.community_id=? ORDER BY COALESCE(e.completed_at,e.expires_at) DESC,e.id DESC LIMIT 100`, scope),
-    rows(db, `SELECT d.*,m.name AS reporter_name,
+    rows(db, `SELECT d.*,m.name AS reporter_name,c.name AS district,
       COALESCE(p.title, CONCAT(o.title,' ⇄ ',w.title)) AS trade_title
       FROM disputes d JOIN members m ON (m.community_id,m.id)=(d.community_id,d.reporter_id)
+      JOIN communities c ON c.id=d.community_id
       LEFT JOIN services s ON d.kind='service' AND (s.community_id,s.id)=(d.community_id,d.trade_id)
       LEFT JOIN help_posts p ON (p.community_id,p.id)=(s.community_id,s.post_id)
       LEFT JOIN exchanges e ON d.kind='exchange' AND (e.community_id,e.id)=(d.community_id,d.trade_id)
       LEFT JOIN items o ON (o.community_id,o.id)=(e.community_id,e.offered_id)
       LEFT JOIN items w ON (w.community_id,w.id)=(e.community_id,e.wanted_id)
-      WHERE d.community_id=? ORDER BY d.outcome IS NULL DESC,d.created_at DESC,d.trade_id LIMIT 100`, scope),
+      WHERE d.community_id IN (${disputeDistricts.map(() => '?').join(',')})
+      ORDER BY d.outcome IS NULL DESC,d.created_at DESC,d.trade_id,d.community_id LIMIT 100`, disputeDistricts),
     rows(db, `SELECT a.*,m.name AS actor_name,
       COALESCE(p.title, CONCAT(o.title,' ⇄ ',w.title)) AS target_title
       FROM audit_log a JOIN members m ON (m.community_id,m.id)=(a.community_id,a.actor_id)

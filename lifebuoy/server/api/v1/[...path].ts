@@ -4,7 +4,7 @@ import { changeExchange, proposeExchange, publishItem } from '../../utils/exchan
 import { changeRating, memberReputations, reputation } from '../../utils/ratings'
 import { loginMember, loginRateLimit, registerMember } from '../../utils/member-auth'
 import { hongKongDistrictIds } from '../../utils/districts'
-import { adminDashboard, adminMemberPage } from '../../utils/admin-dashboard'
+import { adminDashboard, adminDisputeDistrictIds, adminMemberPage } from '../../utils/admin-dashboard'
 import { changeMemberSettings } from '../../utils/member-settings'
 import { reportContent, resolveReport } from '../../utils/moderation'
 import { checkChatModeration, prepareMemberMessage } from '../../utils/member-chat'
@@ -152,6 +152,12 @@ export default defineEventHandler(async (event) => {
   if ((resource !== 'services' && resource !== 'exchanges') || !action) fail(404, 'unknown_route')
   const tradeId = uuid(id)
   const kind = resource === 'services' ? 'service' : 'exchange'
+  if (action === 'resolve') {
+    if (actor.role !== 'admin') fail(403, 'admin_required')
+    const district = input.community_id ?? community
+    if (typeof district !== 'string' || !adminDisputeDistrictIds(actor).includes(district)) fail(400, 'invalid_district')
+    return transaction(db, conn => changeRating(conn, actor, kind, tradeId, action, input, district))
+  }
   let tradeActor = actor
   if (actor.role === 'member') {
     // Resolve the historical district before starting the transaction, so the
@@ -167,7 +173,7 @@ export default defineEventHandler(async (event) => {
     }
   }
   return transaction(db, async conn => {
-    if (action === 'rate' || action === 'dispute' || action === 'resolve') {
+    if (action === 'rate' || action === 'dispute') {
       return changeRating(conn, tradeActor, kind, tradeId, action, input)
     }
     return kind === 'exchange'

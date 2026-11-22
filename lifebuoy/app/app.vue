@@ -39,6 +39,7 @@ function navigate(next: View) {
   view.value = next
   query.value = ''
   sidebarOpen.value = false
+  if (next === 'reports' || next === 'disputes') void load()
 }
 
 const navigation = computed<NavigationMenuItem[]>(() => [
@@ -52,7 +53,6 @@ const columns = computed<TableColumn<AdminRow>[]>(() => {
   const key = section.value
   if (!key) return []
   return [
-    { title: '待處理內容舉報', amount: data.reports.filter(row => row.state === 'pending').length, icon: sections.reports.icon, to: 'reports' },
     ...sections[key].columns.map(([field, header]) => ({
       id: field, header, accessorFn: (row: AdminRow) => displayValue(key, row, field),
     })),
@@ -74,10 +74,12 @@ const visibleRows = computed(() => section.value === 'members'
   : results.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 const resultsTotal = computed(() => section.value === 'members' ? memberPage.value?.total ?? 0 : results.value.length)
 const openDisputes = computed(() => dashboard.value?.disputes.filter(row => !row.outcome) ?? [])
+const openReports = computed(() => dashboard.value?.reports.filter(row => row.state === 'pending') ?? [])
 const summary = computed(() => {
   const data = dashboard.value
   if (!data) return []
   return [
+    { title: '待處理內容舉報', amount: openReports.value.length, icon: sections.reports.icon, to: 'reports' },
     { title: '待處理申訴', amount: openDisputes.value.length, icon: sections.disputes.icon, to: 'disputes' },
     { title: '進行中服務', amount: data.services.filter(row => ['agreement', 'pending'].includes(String(row.state))).length, icon: sections.services.icon, to: 'services' },
     { title: '保留中交收', amount: data.exchanges.filter(row => statusKey('exchanges', row) === 'reserved').length, icon: sections.exchanges.icon, to: 'exchanges' },
@@ -220,7 +222,9 @@ function actions(key: SectionKey, row: AdminRow): DropdownMenuItem[] {
     const path = `${collection}/${row.trade_id}/resolve`
     const subject = displayValue(key, row, 'trade_title')
     for (const [outcome, label] of [['restore', '恢復評價'], ['exclude', '排除評價']] as const) {
-      items.push({ label, onSelect: () => prepare({ label, subject, path, body: { outcome }, needsReason: true }) })
+      items.push({ label, onSelect: () => prepare({
+        label, subject, path, body: { outcome, community_id: String(row.community_id) }, needsReason: true,
+      }) })
     }
   }
   if (key === 'services' && row.state === 'settled') {
@@ -355,7 +359,8 @@ useHead({ title: '社區救生圈管理', htmlAttrs: { lang: 'zh-Hant-HK' } })
             </div>
             <UAlert v-if="section === 'members' && membersError" color="error" variant="soft" :title="membersError" />
             <UTable v-else :key="section" :data="visibleRows" :columns="columns" :loading="section === 'members' && membersLoading"
-              :empty="query.trim() ? '找不到符合的紀錄' : section === 'members' ? '此範圍目前沒有成員' : '目前沒有紀錄'"
+              :empty="query.trim() ? '找不到符合的紀錄' : section === 'members' ? '此範圍目前沒有成員'
+                : section === 'reports' ? '目前沒有內容舉報' : section === 'disputes' ? '目前沒有交易申訴' : '目前沒有紀錄'"
               :ui="{ td: 'align-top max-w-72 whitespace-normal wrap-break-word' }">
               <template #state-cell="{ row }">
                 <UBadge :color="badge(section, row.original)" variant="soft" :label="displayValue(section, row.original, 'state')" />

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nuxt dev",
     "build": "nuxt build",
+    "start": "nuxt start",
     "migrate": "node scripts/migrate.mjs",
     "migrate:status": "prisma migrate status",
     "seed:local": "node scripts/seed.mjs",

@@ -8,7 +8,7 @@ export const sections = {
     ['reason', '舉報原因'], ['reporter_name', '舉報人'], ['state', '狀態'], ['created_at', '舉報時間'],
   ] },
   disputes: { label: '申訴', icon: 'i-lucide-message-square-warning', columns: [
-    ['trade_title', '涉及事項'], ['reporter_name', '申訴人'], ['kind', '類型'],
+    ['trade_title', '涉及事項'], ['reporter_name', '申訴人'], ['district', '地區'], ['kind', '類型'],
     ['reason', '申訴理由'], ['outcome', '處理狀態'], ['created_at', '提出時間'],
   ] },
   members: { label: '成員', icon: 'i-lucide-users', columns: [

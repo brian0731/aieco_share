@@ -413,4 +413,34 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     assert.ok(!first.members.some(member => member.id === second.members[0].id))
     assert.deepEqual(await request('admin', path + 'unmatched'), { members: [], total: 0, page: 1 })
   })
+
+  await t.test('administrators can find and resolve disputes outside their own district', async () => {
+    const district = 'hk-eastern'
+    const trade = randomUUID()
+    const reporter = randomUUID()
+    const provider = randomUUID()
+    for (const id of [reporter, provider]) {
+      await db.execute('INSERT INTO members (community_id,id,name) VALUES (?,?,?)', [district, id, '跨區申訴測試'])
+    }
+    await db.execute("INSERT INTO help_posts (community_id,id,author_id,kind,title,area,minutes) VALUES (?,?,?,'request',?,?,?)",
+      [district, trade, reporter, '跨區互助', '東區', 20])
+    await db.execute("INSERT INTO services (community_id,id,post_id,payer_id,provider_id,minutes,state) VALUES (?,?,?,?,?,20,'pending')",
+      [district, trade, trade, reporter, provider])
+    await db.execute("INSERT INTO disputes (community_id,kind,trade_id,reporter_id,reason) VALUES (?,'service',?,?,?)",
+      [district, trade, reporter, '核對跨區申訴'])
+
+    const findDispute = async () => (await request('admin', 'admin')).disputes.find(row => row.trade_id === trade)
+    const before = await findDispute()
+    assert.equal(before.district, '東區')
+    assert.equal(before.outcome, null)
+    const action = { community_id: district, outcome: 'restore', reason: '已核對' }
+    const path = 'services/' + trade + '/resolve'
+    await request('payer', path, action, 403)
+    await request('admin', path, { ...action, community_id: other }, 400)
+    await request('admin', path, action)
+    assert.equal((await findDispute()).outcome, 'restore')
+    const [[entry]] = await db.execute("SELECT community_id,actor_id FROM audit_log WHERE action='service_dispute_restore' AND target_id=?", [trade])
+    assert.equal(entry.community_id, community)
+    assert.equal(entry.actor_id, 'admin')
+  })
 })
