@@ -365,7 +365,7 @@ extension _ExchangePages on _LifebuoyHomeState {
           children: [
             memberRating(profile),
             const SizedBox(height: 8),
-            Text('$count 位會員評分'),
+            Text('$count 則評價'),
           ],
         ),
         actions: [
@@ -383,7 +383,7 @@ extension _ExchangePages on _LifebuoyHomeState {
     final completed = member['completed_count'];
     final rating = score == null
         ? (member.containsKey('score') ? '評分資料不足' : '暫未提供評分')
-        : '${(score * 20).round()}／100';
+        : '${(score * 20).toStringAsFixed(2)}／100';
     final colors = Theme.of(context).colorScheme;
     return Wrap(
       crossAxisAlignment: WrapCrossAlignment.center,

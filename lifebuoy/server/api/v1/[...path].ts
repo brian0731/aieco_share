@@ -14,6 +14,7 @@ async function publicBoard(db: Db, communities: readonly string[]) {
   const [posts, items] = await Promise.all([
     rows(db, `SELECT p.id,p.community_id,p.kind,p.title,p.area,p.minutes,p.author_id,m.name AS author,
       COALESCE(m.origin_community_id,m.community_id) AS author_origin,
+      (SELECT s.state FROM services s WHERE s.community_id=p.community_id AND s.post_id=p.id) AS match_state,
       EXISTS(SELECT 1 FROM services s WHERE s.community_id=p.community_id AND s.post_id=p.id) AS matched
       FROM help_posts p JOIN members m ON (m.community_id,m.id)=(p.community_id,p.author_id)
       WHERE p.community_id IN (${districtParameters}) AND p.withdrawn=FALSE
@@ -74,8 +75,10 @@ export default defineEventHandler(async (event) => {
           ON (c.community_id,c.member_id)=(original.community_id,original.id) AND c.applied_at IS NOT NULL
         WHERE m.community_id=? AND m.id=?`, [community, actor.id]),
       publicBoard(db, [community]),
-      rows(db, `SELECT s.*,p.title FROM services s JOIN help_posts p
+      rows(db, `SELECT s.*,p.title,p.area,payer.name AS payer_name,provider.name AS provider_name FROM services s JOIN help_posts p
         ON (p.community_id,p.id)=(s.community_id,s.post_id)
+        JOIN members payer ON (payer.community_id,payer.id)=(s.community_id,s.payer_id)
+        JOIN members provider ON (provider.community_id,provider.id)=(s.community_id,s.provider_id)
         WHERE s.community_id IN (${scope}) AND (s.payer_id=? OR s.provider_id=?)
         ORDER BY p.created_at DESC,s.id DESC LIMIT 100`, [...districts, actor.id, actor.id]),
       rows<{ delta: number | string, entry_order: number }>(db, `SELECT e.service_id,e.kind,e.delta,j.created_at,p.title,0 AS entry_order
@@ -143,7 +146,7 @@ export default defineEventHandler(async (event) => {
       if (accountAction) return changeMemberSettings(conn, member, id, input)
       if (chatAction) return prepareMemberMessage(conn, member, input)
       if (resource === 'posts' && !id) return publishHelp(conn, actor, input)
-      if (resource === 'posts' && action === 'match') return matchHelp(conn, actor, uuid(id))
+      if (resource === 'posts' && action === 'match') return matchHelp(conn, actor, uuid(id), input)
       if (resource === 'items' && !id) return publishItem(conn, actor, input)
       if (resource === 'exchanges' && !id) return proposeExchange(conn, actor, input)
       fail(404, 'unknown_route')

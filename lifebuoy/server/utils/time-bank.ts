@@ -45,22 +45,26 @@ export async function publishHelp(db: PoolConnection, actor: Actor, input: Input
   return { id }
 }
 
-export async function matchHelp(db: PoolConnection, actor: Actor, id: string) {
+export async function matchHelp(db: PoolConnection, actor: Actor, id: string, input: Input = {}) {
   const community = actor.community_id
   const [post] = await rows<HelpPost>(db, 'SELECT * FROM help_posts WHERE community_id=? AND id=? FOR UPDATE', [community, id])
   if (!post) fail(404, 'post_not_found')
   if (post.kind === 'free' || post.author_id === actor.id) fail(409, 'post_not_matchable')
+  const agreed = input.minutes !== undefined
+  if (agreed && minutes(input.minutes) !== post.minutes) fail(409, 'minutes_mismatch')
   const payer = post.kind === 'request' ? post.author_id : actor.id
   const provider = post.kind === 'offer' ? post.author_id : actor.id
   const [existing] = await rows<Service>(db, 'SELECT * FROM services WHERE community_id=? AND post_id=? FOR UPDATE', [community, id])
   if (existing) {
     if (existing.payer_id !== payer || existing.provider_id !== provider) fail(409, 'already_matched')
+    if (existing.state === 'cancelled') fail(409, 'service_cancelled')
     return existing
   }
   if (post.withdrawn) fail(409, 'post_not_matchable')
   await db.execute(
-    'INSERT INTO services (community_id,id,post_id,payer_id,provider_id,minutes) VALUES (?,?,?,?,?,?)',
-    [community, id, id, payer, provider, post.minutes],
+    `INSERT INTO services (community_id,id,post_id,payer_id,provider_id,minutes,payer_agreed,provider_agreed)
+     VALUES (?,?,?,?,?,?,?,?)`,
+    [community, id, id, payer, provider, post.minutes, agreed && actor.id === payer, agreed && actor.id === provider],
   )
   await audit(db, actor, 'match_service', id)
   return lockService(db, actor, id)
@@ -149,6 +153,13 @@ export async function changeService(db: PoolConnection, actor: Actor, id: string
     return lockService(db, actor, id)
   }
   if (!payer && service.provider_id !== actor.id) fail(403, 'participant_required')
+  if (action === 'cancel') {
+    if (service.state === 'cancelled') return service
+    if (service.state !== 'agreement' && service.state !== 'pending') fail(409, 'service_not_cancellable')
+    await db.execute("UPDATE services SET state='cancelled' WHERE community_id=? AND id=?", [community, id])
+    await audit(db, actor, 'cancel_service', id)
+    return lockService(db, actor, id)
+  }
   await blockDispute(db, actor, 'service', id)
   if (minutes(input.minutes) !== service.minutes) fail(409, 'minutes_mismatch')
   if (action === 'agree') {

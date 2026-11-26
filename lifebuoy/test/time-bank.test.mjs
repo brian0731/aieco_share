@@ -94,6 +94,31 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     return result.map(row => row.delta)
   }
 
+  await t.test('joining records consent and both participants can cancel before settlement', async () => {
+    for (const accept of [false, true]) {
+      const id = randomUUID()
+      await request('payer', 'posts', { id, kind: 'request', title: '測試取消', area: '驗收區', minutes: 30 })
+      await request('provider', `posts/${id}/match`, { minutes: 31 }, 409)
+      const joined = await request('provider', `posts/${id}/match`, agreement)
+      assert.equal(joined.provider_agreed, 1)
+      assert.equal(joined.payer_agreed, 0)
+      if (accept) {
+        assert.equal((await request('payer', `services/${id}/agree`, agreement)).state, 'pending')
+        await request('provider', `services/${id}/confirm`, agreement)
+      }
+      await request('new', `services/${id}/cancel`, {}, 403)
+      const before = await balances()
+      const canceller = accept ? 'payer' : 'provider'
+      assert.equal((await request(canceller, `services/${id}/cancel`, {})).state, 'cancelled')
+      assert.equal((await request(canceller, `services/${id}/cancel`, {})).state, 'cancelled')
+      await request('payer', `services/${id}/confirm`, agreement, 409)
+      assert.deepEqual(await balances(), before)
+      assert.deepEqual(await entries(id), [])
+      const board = await request('payer', 'home')
+      assert.equal(board.posts.find(post => post.id === id).match_state, 'cancelled')
+    }
+  })
+
   await t.test('single confirmation, lost response retry and tenant isolation', async () => {
     const id = await pending()
     const path = `services/${id}/confirm`
@@ -239,7 +264,7 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     completedExchange = { id: loser, partner }
   })
 
-  await t.test('ratings appear immediately, count each reviewer once, and respect disputes', async () => {
+  await t.test('ratings appear immediately, count every trade review, and respect disputes', async () => {
     const submissions = []
     for (const [reviewer, stars] of [['provider',5], ['new',4], ['helper',3]]) {
       const id = randomUUID()
@@ -282,9 +307,10 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     const dashboard = await request('admin', 'admin')
     assert.equal(dashboard.community, '驗收社區')
     assert.ok(dashboard.members.every(member => member.name !== 'outsider' && !('token_hash' in member)))
-    assert.equal(dashboard.disputes.length, 1)
-    assert.equal(dashboard.disputes[0].trade_title, '驗收服務')
-    assert.equal(dashboard.disputes[0].reporter_name, 'payer')
+    const communityDisputes = dashboard.disputes.filter(row => row.community_id === community)
+    assert.equal(communityDisputes.length, 1)
+    assert.equal(communityDisputes[0].trade_title, '驗收服務')
+    assert.equal(communityDisputes[0].reporter_name, 'payer')
     const service = dashboard.services.find(row => row.id === submissions[0])
     assert.equal(service.title, '驗收服務')
     assert.equal(service.provider_name, 'payer')
@@ -295,15 +321,33 @@ test('Nitro and InnoDB time bank', { timeout: 60_000 }, async t => {
     assert.ok(dashboard.audit.some(row => row.action === 'service_dispute_open' && row.target_title === '驗收服務'))
     await request('admin', `services/${submissions[0]}/resolve`, { outcome: 'restore', reason: '驗收恢復' })
     assert.equal((await request('payer', 'members/payer')).score, 4)
-    // Make the completed exchange the most recent trade with this reviewer.
+    // This reviewer adds a rating for a separate trade on top of the service rating.
     await db.execute('UPDATE exchanges SET completed_at=UTC_TIMESTAMP(6) WHERE community_id=? AND id=?',
       [community, completedExchange.id])
     const rateExchange = `exchanges/${completedExchange.id}/rate`
     await request(completedExchange.partner, rateExchange, { stars: 1 })
-    const expectedScore = completedExchange.partner === 'provider' ? 2.7 : 3
     assert.deepEqual((await request('payer', 'home')).members.find(row => row.id === 'payer'),
-      { ...ratedMember, score: expectedScore })
+      { ...ratedMember, count: 4, score: 3.25 })
     await request('payer', rateExchange, { stars: 5 })
+  })
+
+  await t.test('five 5-star and twenty 1-star reviews yield 36.00 out of 100', async () => {
+    const subject = 'average-subject'
+    await db.execute("INSERT INTO members (community_id,id,name,role,balance) VALUES (?,?,?,'member',0)",
+      [community,subject,subject])
+    for (let index = 0; index < 25; index++) {
+      const id = randomUUID()
+      await db.execute(`INSERT INTO help_posts (community_id,id,author_id,kind,title,area,minutes)
+        VALUES (?,?,?,'offer','星級平均驗收','驗收區',30)`, [community,id,subject])
+      await db.execute(`INSERT INTO services (community_id,id,post_id,payer_id,provider_id,minutes,state,completed_at)
+        VALUES (?,?,?,'helper',?,30,'settled',UTC_TIMESTAMP(6))`, [community,id,id,subject])
+      await request('helper', `services/${id}/rate`, { stars: index < 5 ? 5 : 1 })
+    }
+    const member = await request('new', `members/${subject}`)
+    assert.equal(member.count, 25)
+    assert.equal(member.score, 1.8)
+    assert.equal((member.score * 20).toFixed(2), '36.00')
+    assert.deepEqual((await request('new', 'home')).members.find(row => row.id === subject), member)
   })
 
   await t.test('self registration, password login, guest board and session revocation', async () => {
