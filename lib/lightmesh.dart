@@ -10,9 +10,7 @@ import 'dart:math';
 import 'package:flutter/material.dart' hide Text, Tooltip;
 import 'package:flutter/material.dart' as material show Text, Tooltip;
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter/services.dart';
-import 'package:latlong2/latlong.dart' show LatLng;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -23,7 +21,6 @@ import 'network_pairing_client.dart';
 const String _aiecoWebUrl = 'https://www.aieco.hk';
 const String _communityLifebuoyUrl = 'https://www.aieco.hk/community/lifebuoy';
 const String _communityWallUrl = 'https://www.aieco.hk/community/wall';
-const String _communityShareUrl = 'https://www.aieco.hk/community/share';
 const String whatsAppSupportUrl =
     'https://wa.me/+85262112160?text=%E6%83%B3%E6%9F%A5%E8%A9%A2%E5%85%89%E7%B6%B2%E6%94%AF%E6%8F%B4';
 const String lineSupportUrl = 'https://line.me/ti/p/7elEusTH6q';
@@ -34,8 +31,6 @@ const String _communityNewsCategory = 'community-info';
 const int _communityNewsLimit = 50;
 const int _communityNewsPageSize = 5;
 const String _launchImageAsset = 'assets/images/launch_fullscreen.png';
-const String _googleMapsApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
-const String _googleMapsMapId = String.fromEnvironment('GOOGLE_MAPS_MAP_ID');
 const String _onlineRelayUrl = String.fromEnvironment('AIECO_ONLINE_RELAY_URL');
 const String _networkConnectionCode = String.fromEnvironment(
   'AIECO_NETWORK_CONNECTION_CODE',
@@ -58,28 +53,6 @@ const double _radarLocationUpdateThresholdMeters = 8;
 const double _radarAccuracyUpdateThresholdMeters = 20;
 const Duration _wirelessStatusInterval = Duration(seconds: 6);
 const Duration _wifiGroupInterval = Duration(minutes: 5);
-const double _hongKongCenterLatitude = 22.3193;
-const double _hongKongCenterLongitude = 114.1694;
-const double _wongTaiSinMeetupLatitude = 22.34218;
-const double _wongTaiSinMeetupLongitude = 114.19355;
-const String _wongTaiSinMeetupId = 'wong-tai-sin-temple-meetup';
-const String _wongTaiSinMeetupName = '集合點';
-const String _hongKongOfflineTileTemplate =
-    'assets/map_tiles/hong_kong/{z}/{x}/{y}.png';
-const String _hongKongOfflineTilePrefix = 'assets/map_tiles/hong_kong/';
-const int _hongKongOfflineMinZoom = 10;
-const int _hongKongOfflineMaxNativeZoom = 16;
-const int _hongKongOfflineMaxZoom = 18;
-const int _kowloonOfflineDetailZoom = 17;
-const double _kowloonDetailWest = 114.12;
-const double _kowloonDetailEast = 114.27;
-const double _kowloonDetailNorth = 22.39;
-const double _kowloonDetailSouth = 22.29;
-const int _wongTaiSinOfflineDetailZoom = 18;
-const double _wongTaiSinDetailWest = 114.18;
-const double _wongTaiSinDetailEast = 114.24;
-const double _wongTaiSinDetailNorth = 22.36;
-const double _wongTaiSinDetailSouth = 22.32;
 const String _moderationContactEmail = 'info@aieco.hk';
 const String _moderationResponseWindow = '24 小時';
 
@@ -2199,7 +2172,6 @@ class _PropagationLightHomeState extends State<PropagationLightHome>
                 final radarPanel = _LightRadarPanel(
                   mesh: _mesh,
                   radar: _radar,
-                  enableWebView: widget.enableWebView,
                   onLocate: () => unawaited(_locateRadar(force: true)),
                   onQuoteContactName: _quoteContactNameForChat,
                   onEditUserName: () => unawaited(_editUserName()),
@@ -2600,14 +2572,8 @@ class _CommunityInfoTabPage extends StatelessWidget {
 
   final bool enableNews;
 
-  static const _aedMapUrl =
-      'https://www.google.com/maps/d/u/0/viewer?mid=1ufgVocWH6anSLW3jvn6ic5UOq5034WPW';
   static const _lightMeshTutorialUrl =
       'https://www.youtube.com/watch?v=q94Pgn1gSVc';
-
-  Future<void> _openAedMap(BuildContext context) {
-    return _openExternalUrl(context, _aedMapUrl);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -2693,9 +2659,9 @@ class _CommunityInfoTabPage extends StatelessWidget {
                       ],
                     ),
                     _InfoCard(
-                      icon: Icons.map_outlined,
+                      icon: Icons.place_outlined,
                       color: const Color(0xFF2E7D32),
-                      title: '離線地圖記法',
+                      title: '記下附近地標',
                       rows: const [
                         ('', '先寫低最近港鐵出口、巴士站、屋邨入口、商場或學校。'),
                         ('', '電梯停用時，記低可行樓梯、平台、斜路和避雨位置。'),
@@ -2770,23 +2736,6 @@ class _CommunityInfoTabPage extends StatelessWidget {
                         ('', '開機後跟語音指示貼電極片；未聽到指示前不要觸碰傷者。'),
                         ('', '繼續心外壓，直到救護員到場、傷者恢復或現場不安全。'),
                       ],
-                      action: FilledButton.icon(
-                        onPressed: () => unawaited(_openAedMap(context)),
-                        icon: const Icon(Icons.pin_drop_outlined, size: 18),
-                        label: const LocalizedText('AED 地圖'),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF880E4F),
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(0, 40),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 10,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
                     ),
                   ],
                 ),
@@ -2893,16 +2842,6 @@ class _CommunityLinkGrid extends StatelessWidget {
               title: '社區共鳴牆',
               body: '街坊留言',
               url: _communityWallUrl,
-            ),
-          ),
-          SizedBox(width: 8),
-          Expanded(
-            child: _CommunityLinkTile(
-              icon: Icons.map_outlined,
-              color: Color(0xFF1565C0),
-              title: '守望地圖',
-              body: '分享狀況',
-              url: _communityShareUrl,
             ),
           ),
         ],
@@ -3962,14 +3901,12 @@ class _InfoCard extends StatelessWidget {
     required this.color,
     required this.title,
     required this.rows,
-    this.action,
   });
 
   final IconData icon;
   final Color color;
   final String title;
   final List<(String, String)> rows;
-  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -4026,10 +3963,6 @@ class _InfoCard extends StatelessWidget {
               for (var index = 0; index < rows.length; index += 1) ...[
                 _InfoCardRow(row: rows[index], color: color),
                 if (index != rows.length - 1) const SizedBox(height: 9),
-              ],
-              if (action != null) ...[
-                const SizedBox(height: 12),
-                Align(alignment: Alignment.centerLeft, child: action!),
               ],
             ],
           ),
@@ -5183,8 +5116,7 @@ class _FeatureGuideSheet extends StatelessWidget {
           title: '光之雷達',
           description: '光之雷達用來分享和查看光點位置，協助附近用戶互相找到彼此。',
           items: [
-            '定位後會把你的光點同步到光之網絡，附近光點會出現在雷達列表和地圖上。',
-            '線上可使用 Google Map；沒有外網時，仍可用香港離線地圖顯示附近光點。',
+            '定位後會把你的光點同步到光之網絡，附近光點會出現在雷達列表。',
             '可查看最近光點、求救光點和距離資訊，並引用光點名稱回到光之通道聊天。',
           ],
         ),
@@ -5616,7 +5548,6 @@ class _LightRadarPanel extends StatefulWidget {
   const _LightRadarPanel({
     required this.mesh,
     required this.radar,
-    required this.enableWebView,
     required this.onLocate,
     required this.onQuoteContactName,
     required this.onEditUserName,
@@ -5624,7 +5555,6 @@ class _LightRadarPanel extends StatefulWidget {
 
   final MeshChatService mesh;
   final LightRadarController radar;
-  final bool enableWebView;
   final VoidCallback onLocate;
   final ValueChanged<String> onQuoteContactName;
   final VoidCallback onEditUserName;
@@ -5633,22 +5563,11 @@ class _LightRadarPanel extends StatefulWidget {
   State<_LightRadarPanel> createState() => _LightRadarPanelState();
 }
 
-enum _RadarMapMode { online, offline }
-
 class _LightRadarPanelState extends State<_LightRadarPanel> {
   String? _selectedContactId;
-  var _selectedContactFocusVersion = 0;
-  var _locationFocusVersion = 0;
-  var _mapMode = _googleMapsApiKey.isEmpty
-      ? _RadarMapMode.offline
-      : _RadarMapMode.online;
-
   void _selectContact(String? contactId) {
     setState(() {
       _selectedContactId = contactId;
-      if (contactId != null) {
-        _selectedContactFocusVersion += 1;
-      }
     });
     if (contactId == null) {
       return;
@@ -5670,7 +5589,6 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
   void _locate() {
     setState(() {
       _selectedContactId = null;
-      _locationFocusVersion += 1;
     });
     widget.onLocate();
   }
@@ -5832,14 +5750,6 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
     final selectedContactId = contactIds.contains(_selectedContactId)
         ? _selectedContactId
         : null;
-    final effectiveMapMode =
-        _mapMode == _RadarMapMode.online && widget.enableWebView
-        ? _RadarMapMode.online
-        : _RadarMapMode.offline;
-    final nearbyContacts = widget.mesh.radarContactsWithin(_nearbyRadarMeters);
-    final nearbyContactIds = nearbyContacts
-        .map((contact) => contact.id)
-        .toSet();
     final sosContacts =
         contacts.where((contact) => contact.isSosActive).toList()..sort((a, b) {
           if (a.isMe == b.isMe) {
@@ -5852,15 +5762,9 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
       currentLocation: widget.mesh.myLocation,
       limit: 10,
     );
-    final nearbyCount = nearbyContacts.length;
-    final radarMapSignature = _radarMapSignature(
-      location: location,
-      contacts: contacts,
-      activities: activities,
-      nearbyContactIds: nearbyContactIds,
-      selectedContactId: selectedContactId,
-    );
-
+    final nearbyCount = widget.mesh
+        .radarContactsWithin(_nearbyRadarMeters)
+        .length;
     return Card(
       child: Column(
         children: [
@@ -5891,9 +5795,7 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
                                 : activities.isNotEmpty
                                 ? '雷達活動 ${activities.length} 個'
                                 : nearbyCount == 0
-                                ? effectiveMapMode == _RadarMapMode.online
-                                      ? '線上 Google Map'
-                                      : '香港18區離線地圖'
+                                ? '暫未收到附近光點'
                                 : '$_nearbyRadarLabel $nearbyCount 個光點',
                             style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(
@@ -5924,27 +5826,6 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      SegmentedButton<_RadarMapMode>(
-                        showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment<_RadarMapMode>(
-                            value: _RadarMapMode.online,
-                            icon: Icon(Icons.public, size: 16),
-                            label: LocalizedText('線上'),
-                          ),
-                          ButtonSegment<_RadarMapMode>(
-                            value: _RadarMapMode.offline,
-                            icon: Icon(Icons.map_outlined, size: 16),
-                            label: LocalizedText('離線'),
-                          ),
-                        ],
-                        selected: {_mapMode},
-                        onSelectionChanged: (selection) {
-                          final mode = selection.single;
-                          setState(() => _mapMode = mode);
-                        },
-                      ),
-                      const SizedBox(width: 8),
                       FilledButton.icon(
                         key: const ValueKey('radar-locate-button'),
                         onPressed: widget.radar.busy ? null : _locate,
@@ -5973,65 +5854,57 @@ class _LightRadarPanelState extends State<_LightRadarPanel> {
             ),
           ),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: effectiveMapMode == _RadarMapMode.online
-                  ? _OnlineGoogleRadarMap(
-                      key: ValueKey(
-                        'online-google-map-${_currentAppLanguage.code}',
+            child: ListView(
+              children: [
+                _ClosestRadarStrip(
+                  contacts: closestContacts,
+                  currentLocation: widget.mesh.myLocation,
+                  selectedContactId: selectedContactId,
+                  onSelectedContact: _selectContact,
+                  onQuoteContactName: widget.onQuoteContactName,
+                ),
+                _SosRadarStrip(
+                  contacts: sosContacts,
+                  currentLocation: widget.mesh.myLocation,
+                  selectedContactId: selectedContactId,
+                  onSelectedContact: _selectContact,
+                  onQuoteContactName: widget.onQuoteContactName,
+                ),
+                _DistrictRadarReport(
+                  contacts: contacts,
+                  currentLocation: widget.mesh.myLocation,
+                ),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                  child: _RadarStatus(
+                    location: location,
+                    message: widget.radar.message,
+                  ),
+                ),
+                const Divider(height: 1),
+                if (activities.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: LocalizedText('暫無雷達活動'),
+                  )
+                else
+                  for (final activity in activities)
+                    ListTile(
+                      leading: Icon(
+                        _radarActivityIcon(activity.type),
+                        color: _radarActivityColor(activity.type),
                       ),
-                      enabled: widget.enableWebView,
-                      apiKey: _googleMapsApiKey,
-                      mapId: _googleMapsMapId,
-                      displayName: widget.mesh.identityName,
-                      location: location,
-                      contacts: contacts,
-                      activities: activities,
-                      nearbyContactIds: nearbyContactIds,
-                      locationFocusVersion: _locationFocusVersion,
-                      selectedContactId: selectedContactId,
-                      selectedContactFocusVersion: _selectedContactFocusVersion,
-                      onSelectedContactChanged: _selectContact,
-                      onQuoteContactName: widget.onQuoteContactName,
-                    )
-                  : _OfflineHongKongMap(
-                      location: location,
-                      contacts: contacts,
-                      activities: activities,
-                      nearbyContactIds: nearbyContactIds,
-                      refreshSignature: radarMapSignature,
-                      locationFocusVersion: _locationFocusVersion,
-                      selectedContactId: selectedContactId,
-                      selectedContactFocusVersion: _selectedContactFocusVersion,
-                      onSelectedContactChanged: _selectContact,
-                      onQuoteContactName: widget.onQuoteContactName,
+                      title: LocalizedText(activity.title),
+                      subtitle: LocalizedText(activity.hostName),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _showRadarActivityDetails(
+                        context,
+                        activity,
+                        widget.onQuoteContactName,
+                      ),
                     ),
-            ),
-          ),
-          _ClosestRadarStrip(
-            contacts: closestContacts,
-            currentLocation: widget.mesh.myLocation,
-            selectedContactId: selectedContactId,
-            onSelectedContact: _selectContact,
-            onQuoteContactName: widget.onQuoteContactName,
-          ),
-          _SosRadarStrip(
-            contacts: sosContacts,
-            currentLocation: widget.mesh.myLocation,
-            selectedContactId: selectedContactId,
-            onSelectedContact: _selectContact,
-            onQuoteContactName: widget.onQuoteContactName,
-          ),
-          _DistrictRadarReport(
-            contacts: contacts,
-            currentLocation: widget.mesh.myLocation,
-          ),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-            child: _RadarStatus(
-              location: location,
-              message: widget.radar.message,
+              ],
             ),
           ),
         ],
@@ -6479,2641 +6352,176 @@ List<RadarContact> _closestRadarContacts({
   return List.unmodifiable(closestContacts.take(limit));
 }
 
-String _radarMapSignature({
-  required DeviceLocation? location,
-  required List<RadarContact> contacts,
-  required List<MeshRadarActivity> activities,
-  required Set<String> nearbyContactIds,
-  required String? selectedContactId,
-}) {
-  final buffer = StringBuffer();
-  buffer.write('selected=');
-  buffer.write(selectedContactId ?? '');
-  buffer.write('|me=');
-  _writeLocationSignature(buffer, location);
-
-  final sortedNearbyIds = nearbyContactIds.toList()..sort();
-  buffer.write('|near=');
-  buffer.write(sortedNearbyIds.join(','));
-
-  final sortedContacts = contacts.toList()
-    ..sort((left, right) => left.id.compareTo(right.id));
-  for (final contact in sortedContacts) {
-    buffer
-      ..write('|contact=')
-      ..write(contact.id)
-      ..write(':')
-      ..write(contact.name)
-      ..write(':')
-      ..write(contact.isMe ? '1' : '0')
-      ..write(':')
-      ..write(contact.isSosActive ? '1' : '0')
-      ..write(':')
-      ..write(nearbyContactIds.contains(contact.id) ? '1' : '0')
-      ..write(':');
-    _writeLocationSignature(buffer, contact.location);
-  }
-
-  final sortedActivities = activities.toList()
-    ..sort((left, right) => left.id.compareTo(right.id));
-  for (final activity in sortedActivities) {
-    buffer
-      ..write('|activity=')
-      ..write(activity.id)
-      ..write(':')
-      ..write(activity.type)
-      ..write(':')
-      ..write(activity.title)
-      ..write(':');
-    _writeLocationSignature(buffer, activity.location);
-  }
-
-  return buffer.toString();
-}
-
-void _writeLocationSignature(StringBuffer buffer, DeviceLocation? location) {
-  if (location == null) {
-    buffer.write('none');
-    return;
-  }
-
-  buffer
-    ..write(location.latitude.toStringAsFixed(6))
-    ..write(',')
-    ..write(location.longitude.toStringAsFixed(6))
-    ..write(',')
-    ..write(location.accuracyMeters.toStringAsFixed(1));
-}
-
-class _RadarActivityFallbackMarkers extends StatelessWidget {
-  const _RadarActivityFallbackMarkers({
-    required this.activities,
-    required this.onOpenActivity,
-  });
-
-  final List<MeshRadarActivity> activities;
-  final ValueChanged<MeshRadarActivity> onOpenActivity;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Stack(
-          children: [
-            for (var index = 0; index < activities.length; index += 1)
-              _positionedMarker(constraints, activities[index], index),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _positionedMarker(
-    BoxConstraints constraints,
-    MeshRadarActivity activity,
-    int index,
-  ) {
-    const west = 113.80;
-    const east = 114.52;
-    const north = 22.565;
-    const south = 22.14;
-    final x = ((activity.location.longitude - west) / (east - west)).clamp(
-      0.0,
-      1.0,
-    );
-    final y = ((north - activity.location.latitude) / (north - south)).clamp(
-      0.0,
-      1.0,
-    );
-    final offset = (index % 3) * 5.0;
-    final left = (x * constraints.maxWidth - 20 + offset).clamp(
-      0.0,
-      constraints.maxWidth - 40,
-    );
-    final top = (y * constraints.maxHeight - 20 + offset).clamp(
-      36.0,
-      constraints.maxHeight - 40,
-    );
-    final color = _radarActivityColor(activity.type);
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: IconButton.filled(
-        key: ValueKey('radar-fallback-activity-${activity.id}'),
-        tooltip: _localizedUiText(
-          '${activity.localizedTypeLabel}活動：${activity.title}',
-        ),
-        onPressed: () => onOpenActivity(activity),
-        style: IconButton.styleFrom(
-          backgroundColor: color,
-          foregroundColor: Colors.white,
-          fixedSize: const Size(40, 40),
-          padding: EdgeInsets.zero,
-        ),
-        icon: Icon(_radarActivityIcon(activity.type), size: 20),
-      ),
-    );
-  }
-}
-
-class _OfflineHongKongMap extends StatefulWidget {
-  const _OfflineHongKongMap({
-    required this.location,
-    required this.contacts,
-    required this.activities,
-    required this.nearbyContactIds,
-    required this.refreshSignature,
-    required this.locationFocusVersion,
-    required this.selectedContactId,
-    required this.selectedContactFocusVersion,
-    required this.onSelectedContactChanged,
-    required this.onQuoteContactName,
-  });
-
-  final DeviceLocation? location;
-  final List<RadarContact> contacts;
-  final List<MeshRadarActivity> activities;
-  final Set<String> nearbyContactIds;
-  final String refreshSignature;
-  final int locationFocusVersion;
-  final String? selectedContactId;
-  final int selectedContactFocusVersion;
-  final ValueChanged<String?> onSelectedContactChanged;
-  final ValueChanged<String> onQuoteContactName;
-
-  @override
-  State<_OfflineHongKongMap> createState() => _OfflineHongKongTileMapState();
-}
-
-/// Offline map backed by a real XYZ tile pyramid. The legacy image renderer
-/// below remains in the source as a compatibility fallback for installations
-/// that have not imported the tile bundle yet.
-class _OfflineHongKongTileMapState extends State<_OfflineHongKongMap> {
-  final MapController _mapController = MapController();
-  late Future<bool> _hasOfflineTiles;
-  var _pendingLocationFocus = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _hasOfflineTiles = _checkOfflineTiles();
-  }
-
-  Future<bool> _checkOfflineTiles() async {
-    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-    final assets = manifest.listAssets();
-    bool containsZoom(int zoom) => assets.any(
-      (asset) =>
-          asset.startsWith('$_hongKongOfflineTilePrefix$zoom/') &&
-          asset.endsWith('.png'),
-    );
-    return containsZoom(_hongKongOfflineMinZoom) &&
-        containsZoom(_hongKongOfflineMaxNativeZoom);
-  }
-
-  LatLng get _center => widget.location == null
-      ? const LatLng(_hongKongCenterLatitude, _hongKongCenterLongitude)
-      : LatLng(widget.location!.latitude, widget.location!.longitude);
-
-  void _focus(LatLng point) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _mapController.move(point, 17);
-    });
-  }
-
-  void _focusMeetup() {
-    _mapController.move(
-      const LatLng(_wongTaiSinMeetupLatitude, _wongTaiSinMeetupLongitude),
-      17,
-    );
-    widget.onSelectedContactChanged(null);
-  }
-
-  @override
-  void didUpdateWidget(covariant _OfflineHongKongMap oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.locationFocusVersion != oldWidget.locationFocusVersion) {
-      _pendingLocationFocus = true;
-      if (widget.location != null) {
-        _pendingLocationFocus = false;
-        _focus(_latLng(widget.location!));
-      }
-      return;
-    }
-    if (_pendingLocationFocus && widget.location != null) {
-      _pendingLocationFocus = false;
-      _focus(_latLng(widget.location!));
-      return;
-    }
-    if (widget.selectedContactFocusVersion !=
-        oldWidget.selectedContactFocusVersion) {
-      final selected = widget.contacts.where(
-        (contact) => contact.id == widget.selectedContactId,
-      );
-      _focus(selected.isNotEmpty ? _latLng(selected.first.location) : _center);
-    }
-  }
-
-  LatLng _latLng(DeviceLocation location) =>
-      LatLng(location.latitude, location.longitude);
-
-  RadarContact? get _selectedContact {
-    for (final contact in widget.contacts) {
-      if (contact.id == widget.selectedContactId) return contact;
-    }
-    return null;
-  }
-
-  void _changeZoom(double delta) {
-    final camera = _mapController.camera;
-    _mapController.move(
-      camera.center,
-      (camera.zoom + delta)
-          .clamp(_hongKongOfflineMinZoom, _hongKongOfflineMaxZoom)
-          .toDouble(),
-    );
-  }
-
-  @override
-  void dispose() {
-    _mapController.dispose();
-    super.dispose();
-  }
-
-  List<Marker> _markers() {
-    final contacts = <RadarContact>[...widget.contacts];
-    if (widget.location != null && !contacts.any((contact) => contact.isMe)) {
-      contacts.insert(
-        0,
-        RadarContact(
-          id: 'current-device',
-          name: '目前位置',
-          location: widget.location!,
-          isMe: true,
-          isSosActive: false,
-          lastSeen: DateTime.now(),
-        ),
-      );
-    }
-    final markers = contacts.map((contact) {
-      final selected = contact.id == widget.selectedContactId;
-      final color = contact.isSosActive
-          ? const Color(0xFFB00020)
-          : contact.isMe
-          ? const Color(0xFF0D7C66)
-          : selected
-          ? const Color(0xFFEF6C00)
-          : const Color(0xFF1565C0);
-      return Marker(
-        point: _latLng(contact.location),
-        width: 126,
-        height: 52,
-        alignment: Alignment.topCenter,
-        child: GestureDetector(
-          onTap: contact.isMe
-              ? null
-              : () => widget.onSelectedContactChanged(contact.id),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.location_on, size: 36, color: color),
-              Flexible(
-                child: DecoratedBox(
-                  decoration: const BoxDecoration(color: Color(0xCCFFFFFF)),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                    child: LocalizedText(
-                      contact.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      softWrap: false,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }).toList();
-    markers.addAll(
-      widget.activities.map((activity) {
-        final color = _radarActivityColor(activity.type);
-        return Marker(
-          point: _latLng(activity.location),
-          width: 142,
-          height: 64,
-          alignment: Alignment.topCenter,
-          child: GestureDetector(
-            key: ValueKey('radar-activity-marker-${activity.id}'),
-            behavior: HitTestBehavior.opaque,
-            onTap: () => _showRadarActivityDetails(
-              context,
-              activity,
-              widget.onQuoteContactName,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(_radarActivityIcon(activity.type), size: 34, color: color),
-                Flexible(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: const Color(0xEEFFFFFF),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: color),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: LocalizedText(
-                        '${activity.localizedTypeLabel} · ${activity.title}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        softWrap: false,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      }),
-    );
-    markers.add(
-      Marker(
-        point: const LatLng(
-          _wongTaiSinMeetupLatitude,
-          _wongTaiSinMeetupLongitude,
-        ),
-        width: 92,
-        height: 58,
-        alignment: Alignment.topCenter,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _focusMeetup,
-          child: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.groups, size: 34, color: Color(0xFFF9A825)),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Color(0xEEFFF8E1),
-                  borderRadius: BorderRadius.all(Radius.circular(4)),
-                ),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  child: LocalizedText(
-                    _wongTaiSinMeetupName,
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return markers;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: _hasOfflineTiles,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 10),
-                LocalizedText('正在載入香港離線地圖…'),
-              ],
-            ),
-          );
-        }
-        if (snapshot.data != true) {
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.asset(
-                widget.location == null
-                    ? 'assets/images/hong_kong_18_districts.jpg'
-                    : _districtMapAsset(
-                        _districtNameForLocation(widget.location!) ?? '中西區',
-                      ),
-                key: const ValueKey('offline-hong-kong-18-district-map'),
-                fit: BoxFit.contain,
-              ),
-              const Align(
-                alignment: Alignment.topCenter,
-                child: Padding(
-                  padding: EdgeInsets.all(8),
-                  child: Chip(label: LocalizedText('未匯入街道瓦片：目前顯示概覽圖')),
-                ),
-              ),
-              _RadarActivityFallbackMarkers(
-                activities: widget.activities,
-                onOpenActivity: (activity) => _showRadarActivityDetails(
-                  context,
-                  activity,
-                  widget.onQuoteContactName,
-                ),
-              ),
-            ],
-          );
-        }
-        final selectedContact = _selectedContact;
-        return Stack(
-          children: [
-            FlutterMap(
-              key: const ValueKey('offline-hong-kong-18-district-map'),
-              mapController: _mapController,
-              options: MapOptions(
-                initialCenter: _center,
-                initialZoom: widget.location == null ? 10.5 : 14,
-                minZoom: _hongKongOfflineMinZoom.toDouble(),
-                maxZoom: _hongKongOfflineMaxZoom.toDouble(),
-                cameraConstraint: CameraConstraint.containCenter(
-                  bounds: LatLngBounds(
-                    const LatLng(22.565, 114.52),
-                    const LatLng(22.14, 113.80),
-                  ),
-                ),
-                onTap: (_, _) => widget.onSelectedContactChanged(null),
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate: _hongKongOfflineTileTemplate,
-                  tileProvider: AssetTileProvider(),
-                  minNativeZoom: _hongKongOfflineMinZoom,
-                  maxNativeZoom: _hongKongOfflineMaxNativeZoom,
-                  panBuffer: 0,
-                  tileBounds: LatLngBounds(
-                    const LatLng(22.565, 114.52),
-                    const LatLng(22.14, 113.80),
-                  ),
-                  errorImage: const AssetImage(
-                    'assets/images/hong_kong_18_districts.jpg',
-                  ),
-                ),
-                TileLayer(
-                  urlTemplate: _hongKongOfflineTileTemplate,
-                  tileProvider: AssetTileProvider(),
-                  minZoom: _kowloonOfflineDetailZoom.toDouble(),
-                  minNativeZoom: _kowloonOfflineDetailZoom,
-                  maxNativeZoom: _kowloonOfflineDetailZoom,
-                  panBuffer: 0,
-                  tileBounds: LatLngBounds(
-                    const LatLng(_kowloonDetailNorth, _kowloonDetailEast),
-                    const LatLng(_kowloonDetailSouth, _kowloonDetailWest),
-                  ),
-                ),
-                TileLayer(
-                  urlTemplate: _hongKongOfflineTileTemplate,
-                  tileProvider: AssetTileProvider(),
-                  minZoom: _wongTaiSinOfflineDetailZoom.toDouble(),
-                  minNativeZoom: _wongTaiSinOfflineDetailZoom,
-                  maxNativeZoom: _wongTaiSinOfflineDetailZoom,
-                  panBuffer: 0,
-                  tileBounds: LatLngBounds(
-                    const LatLng(_wongTaiSinDetailNorth, _wongTaiSinDetailEast),
-                    const LatLng(_wongTaiSinDetailSouth, _wongTaiSinDetailWest),
-                  ),
-                ),
-                MarkerLayer(markers: _markers()),
-              ],
-            ),
-            Positioned(
-              right: 8,
-              top: 8,
-              child: Column(
-                children: [
-                  IconButton.filledTonal(
-                    tooltip: _localizedUiText('放大地圖'),
-                    onPressed: () => _changeZoom(1),
-                    icon: const Icon(Icons.add),
-                  ),
-                  const SizedBox(height: 4),
-                  IconButton.filledTonal(
-                    tooltip: _localizedUiText('縮小地圖'),
-                    onPressed: () => _changeZoom(-1),
-                    icon: const Icon(Icons.remove),
-                  ),
-                ],
-              ),
-            ),
-            const Positioned(
-              left: 6,
-              bottom: 4,
-              child: DecoratedBox(
-                decoration: BoxDecoration(color: Color(0xCCFFFFFF)),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  child: LocalizedText(
-                    '© OpenStreetMap contributors',
-                    style: TextStyle(fontSize: 9, color: Color(0xFF33423B)),
-                  ),
-                ),
-              ),
-            ),
-            if (selectedContact != null && !selectedContact.isMe)
-              Positioned(
-                right: 8,
-                bottom: 24,
-                child: _MapContactQuoteAction(
-                  contact: selectedContact,
-                  onQuoteContactName: widget.onQuoteContactName,
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// Retained temporarily so older image-map behaviour can be compared or
-// restored while tile bundles are rolled out to existing installations.
-// ignore: unused_element
-class _OfflineHongKongMapState extends State<_OfflineHongKongMap> {
-  final TransformationController _transformationController =
-      TransformationController();
-  String? _selectedDistrictName;
-  String? _mapScopeKey;
-
-  @override
-  void didUpdateWidget(covariant _OfflineHongKongMap oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    if (widget.locationFocusVersion != oldWidget.locationFocusVersion) {
-      _selectedDistrictName = null;
-      _mapScopeKey = null;
-    }
-
-    final selectedContactId = widget.selectedContactId;
-    final nextDistrictName = widget.location == null
-        ? null
-        : _districtNameForLocation(widget.location!);
-    final oldDistrictName = oldWidget.location == null
-        ? null
-        : _districtNameForLocation(oldWidget.location!);
-    if (nextDistrictName != oldDistrictName) {
-      _selectedDistrictName = null;
-      _mapScopeKey = null;
-    }
-
-    if (selectedContactId == null) {
-      return;
-    }
-
-    final stillVisible = widget.contacts.any(
-      (contact) => contact.id == selectedContactId,
-    );
-    if (!stillVisible) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          widget.onSelectedContactChanged(null);
-        }
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _transformationController.dispose();
-    super.dispose();
-  }
-
-  void _handleMapTap(
-    Offset viewportPoint,
-    Size mapSize,
-    _MapBounds mapBounds,
-    List<_DistrictShape> visibleDistricts,
-  ) {
-    final scenePoint = _transformationController.toScene(viewportPoint);
-    final mapRect = _fitMapRect((Offset.zero & mapSize).deflate(10), mapBounds);
-    final contact = _contactAt(scenePoint, mapRect, mapBounds);
-    if (contact != null) {
-      widget.onSelectedContactChanged(contact.id);
-      return;
-    }
-
-    final districtName = _districtAt(scenePoint, mapRect, mapBounds);
-    final visibleDistrictNames = visibleDistricts
-        .map((district) => district.name)
-        .toSet();
-    if (districtName != null) {
-      if (!visibleDistrictNames.contains(districtName)) {
-        widget.onSelectedContactChanged(null);
-        return;
-      }
-      widget.onSelectedContactChanged(null);
-      setState(() {
-        _selectedDistrictName = districtName;
-        _mapScopeKey = null;
-      });
-      return;
-    }
-
-    widget.onSelectedContactChanged(null);
-  }
-
-  RadarContact? _contactAt(
-    Offset scenePoint,
-    Rect mapRect,
-    _MapBounds mapBounds,
-  ) {
-    final contacts = widget.contacts;
-    if (contacts.isEmpty) {
-      return null;
-    }
-
-    final scale = max(1.0, _transformationController.value.getMaxScaleOnAxis());
-    final hitRadius = max(12.0, 34.0 / scale);
-    RadarContact? nearest;
-    var nearestDistance = double.infinity;
-
-    for (final contact in contacts) {
-      if (!mapBounds.containsLocation(contact.location)) {
-        continue;
-      }
-      final point = _projectLocationToMap(contact.location, mapRect, mapBounds);
-      final distance = (point - scenePoint).distance;
-      if (distance <= hitRadius && distance < nearestDistance) {
-        nearest = contact;
-        nearestDistance = distance;
-      }
-    }
-
-    return nearest;
-  }
-
-  String? _districtAt(Offset scenePoint, Rect mapRect, _MapBounds mapBounds) {
-    if (!mapRect.contains(scenePoint)) {
-      return null;
-    }
-
-    return _districtNameForPoint(
-      _unprojectMapPoint(scenePoint, mapRect, mapBounds),
-    );
-  }
-
-  RadarContact? _contactById(String contactId) {
-    for (final contact in widget.contacts) {
-      if (contact.id == contactId) {
-        return contact;
-      }
-    }
-    return null;
-  }
-
-  RadarContact? get _selectedContact {
-    final selectedContactId = widget.selectedContactId;
-    if (selectedContactId == null) {
-      return null;
-    }
-    return _contactById(selectedContactId);
-  }
-
-  void _selectDistrict(String districtName) {
-    widget.onSelectedContactChanged(null);
-    setState(() {
-      _selectedDistrictName = districtName;
-      _mapScopeKey = null;
-    });
-  }
-
-  void _scheduleMapScopeReset(String nextScopeKey) {
-    if (_mapScopeKey == nextScopeKey) {
-      return;
-    }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _mapScopeKey == nextScopeKey) {
-        return;
-      }
-      _transformationController.value = Matrix4.identity();
-      _mapScopeKey = nextScopeKey;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final currentDistrictName = widget.location == null
-        ? null
-        : _districtNameForLocation(widget.location!);
-    final activeDistrictName = _selectedDistrictName ?? currentDistrictName;
-    final visibleDistricts = _localizedDistrictsForDistrict(activeDistrictName);
-    final activeDistrict = activeDistrictName == null
-        ? null
-        : _districtByName(activeDistrictName);
-    final mapBounds = activeDistrict == null
-        ? _MapBounds.hongKong
-        : _mapBoundsForDistricts([activeDistrict]) ?? _MapBounds.hongKong;
-    final mapScopeKey = activeDistrictName ?? 'hong-kong-18-districts';
-    final mapAsset = activeDistrictName == null
-        ? 'assets/images/hong_kong_18_districts.jpg'
-        : _districtMapAsset(activeDistrictName);
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final viewportSize = Size(
-            constraints.maxWidth,
-            constraints.maxHeight,
-          );
-          final mapSize = viewportSize;
-          _scheduleMapScopeReset(mapScopeKey);
-
-          final selectedContact = _selectedContact;
-
-          return Stack(
-            children: [
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (details) => _handleMapTap(
-                  details.localPosition,
-                  mapSize,
-                  mapBounds,
-                  visibleDistricts,
-                ),
-                child: InteractiveViewer(
-                  transformationController: _transformationController,
-                  minScale: 1,
-                  maxScale: 24,
-                  boundaryMargin: const EdgeInsets.all(1600),
-                  constrained: false,
-                  child: SizedBox(
-                    width: mapSize.width,
-                    height: mapSize.height,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Image.asset(
-                          mapAsset,
-                          key: const ValueKey(
-                            'offline-hong-kong-18-district-map',
-                          ),
-                          fit: BoxFit.contain,
-                          filterQuality: FilterQuality.medium,
-                          semanticLabel: _localizedUiText('香港十八區離線地圖'),
-                        ),
-                        CustomPaint(
-                          painter: _HongKongMapPainter(
-                            location: widget.location,
-                            contacts: widget.contacts,
-                            nearbyContactIds: widget.nearbyContactIds,
-                            refreshSignature: widget.refreshSignature,
-                            selectedContactId: widget.selectedContactId,
-                            currentDistrictName: activeDistrictName,
-                            visibleDistricts: visibleDistricts,
-                            mapBounds: mapBounds,
-                            textScaler: MediaQuery.textScalerOf(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              if (activeDistrictName != null)
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  right: 8,
-                  child: IgnorePointer(
-                    child: _MapDistrictFocusBanner(
-                      currentDistrictName: activeDistrictName,
-                    ),
-                  ),
-                ),
-              if (selectedContact != null &&
-                  !selectedContact.isMe &&
-                  mapBounds.containsLocation(selectedContact.location))
-                Positioned(
-                  right: 8,
-                  bottom: visibleDistricts.length > 1 ? 78 : 8,
-                  child: _MapContactQuoteAction(
-                    contact: selectedContact,
-                    onQuoteContactName: widget.onQuoteContactName,
-                  ),
-                ),
-              if (visibleDistricts.length > 1)
-                Positioned(
-                  left: 8,
-                  right: 8,
-                  bottom: 8,
-                  height: 62,
-                  child: Row(
-                    children: [
-                      for (final district in visibleDistricts)
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 3),
-                            child: _DistrictMapThumbnail(
-                              district: district,
-                              selected: district.name == activeDistrictName,
-                              onTap: () => _selectDistrict(district.name),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _DistrictMapThumbnail extends StatelessWidget {
-  const _DistrictMapThumbnail({
-    required this.district,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final _DistrictShape district;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: selected ? const Color(0xFF0D7C66) : Colors.white,
-          width: selected ? 3 : 1,
-        ),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.asset(_districtMapAsset(district.name), fit: BoxFit.cover),
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: ColoredBox(
-                color: selected
-                    ? const Color(0xE60D7C66)
-                    : const Color(0xC9000000),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: LocalizedText(
-                      district.name,
-                      textAlign: TextAlign.center,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _OnlineGoogleRadarMap extends StatefulWidget {
-  const _OnlineGoogleRadarMap({
-    super.key,
-    required this.enabled,
-    required this.apiKey,
-    required this.mapId,
-    required this.displayName,
-    required this.location,
-    required this.contacts,
-    required this.activities,
-    required this.nearbyContactIds,
-    required this.locationFocusVersion,
-    required this.selectedContactId,
-    required this.selectedContactFocusVersion,
-    required this.onSelectedContactChanged,
-    required this.onQuoteContactName,
-  });
-
-  final bool enabled;
-  final String apiKey;
-  final String mapId;
-  final String displayName;
-  final DeviceLocation? location;
-  final List<RadarContact> contacts;
-  final List<MeshRadarActivity> activities;
-  final Set<String> nearbyContactIds;
-  final int locationFocusVersion;
-  final String? selectedContactId;
-  final int selectedContactFocusVersion;
-  final ValueChanged<String?> onSelectedContactChanged;
-  final ValueChanged<String> onQuoteContactName;
-
-  @override
-  State<_OnlineGoogleRadarMap> createState() => _OnlineGoogleRadarMapState();
-}
-
-class _OnlineGoogleRadarMapState extends State<_OnlineGoogleRadarMap> {
-  WebViewController? _controller;
-  Timer? _loadTimeoutTimer;
-  var _progress = 0;
-  var _pageReady = false;
-  var _mapReady = false;
-  String? _mapError;
-
-  @override
-  void initState() {
-    super.initState();
-    _configureController();
-  }
-
-  @override
-  void dispose() {
-    _loadTimeoutTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  void didUpdateWidget(covariant _OnlineGoogleRadarMap oldWidget) {
-    super.didUpdateWidget(oldWidget);
-
-    if (oldWidget.enabled != widget.enabled ||
-        oldWidget.apiKey != widget.apiKey ||
-        oldWidget.mapId != widget.mapId) {
-      _configureController();
-      return;
-    }
-
-    _pushRadarState();
-  }
-
-  void _configureController() {
-    _loadTimeoutTimer?.cancel();
-    _pageReady = false;
-    _mapReady = false;
-    _mapError = null;
-    _progress = 0;
-
-    if (!_canUseWebView || widget.apiKey.isEmpty) {
-      _controller = null;
-      return;
-    }
-
-    final controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..addJavaScriptChannel(
-        'RadarBridge',
-        onMessageReceived: (message) {
-          _handleRadarBridgeMessage(message.message);
-        },
-      )
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (progress) {
-            if (mounted) {
-              setState(() => _progress = progress);
-            }
-          },
-          onPageFinished: (_) {
-            _pageReady = true;
-            if (mounted) {
-              setState(() => _progress = 100);
-            }
-            _pushRadarState();
-          },
-        ),
-      );
-
-    _controller = controller;
-    _loadTimeoutTimer = Timer(const Duration(seconds: 15), () {
-      _setMapError('Google Map 載入逾時，請檢查外網、API key 或稍後再試。');
-    });
-    unawaited(
-      controller.loadHtmlString(
-        _googleRadarMapHtml(
-          apiKey: widget.apiKey,
-          mapId: widget.mapId,
-          initialStateJson: _radarStateJson(),
-        ),
-        baseUrl: _aiecoWebUrl,
-      ),
-    );
-  }
-
-  void _handleRadarBridgeMessage(String payload) {
-    final trimmed = payload.trim();
-    if (trimmed.isEmpty) {
-      widget.onSelectedContactChanged(null);
-      return;
-    }
-
-    try {
-      final decoded = jsonDecode(trimmed);
-      if (decoded is Map) {
-        final action = decoded['action']?.toString();
-        final contactId = decoded['contactId']?.toString() ?? '';
-        switch (action) {
-          case 'mapReady':
-            _setMapReady();
-            return;
-          case 'mapError':
-            _setMapError(
-              decoded['message']?.toString() ?? 'Google Map 未能載入，請切換離線地圖後再試。',
-            );
-            return;
-          case 'quote':
-            final contact = _contactById(contactId);
-            if (contact != null && !contact.isMe) {
-              widget.onQuoteContactName(contact.name);
-              return;
-            }
-            final activity = _activityById(contactId);
-            if (activity != null) {
-              widget.onQuoteContactName(activity.hostName);
-            }
-            return;
-          case 'activity':
-            final activity = _activityById(contactId);
-            if (activity != null && mounted) {
-              _showRadarActivityDetails(
-                context,
-                activity,
-                widget.onQuoteContactName,
-              );
-            }
-            return;
-          case 'select':
-            final activity = _activityById(contactId);
-            if (activity != null && mounted) {
-              _showRadarActivityDetails(
-                context,
-                activity,
-                widget.onQuoteContactName,
-              );
-              return;
-            }
-            widget.onSelectedContactChanged(
-              contactId.isEmpty ? null : contactId,
-            );
-            return;
-        }
-      }
-    } on Object {
-      // Older WebView messages used the raw contact id.
-    }
-
-    widget.onSelectedContactChanged(trimmed);
-  }
-
-  void _retryMap() {
-    setState(_configureController);
-  }
-
-  void _setMapReady() {
-    _loadTimeoutTimer?.cancel();
-    if (!mounted || _mapReady) {
-      return;
-    }
-
-    setState(() {
-      _mapReady = true;
-      _mapError = null;
-    });
-  }
-
-  void _setMapError(String message) {
-    if (!mounted || _mapReady) {
-      return;
-    }
-
-    _loadTimeoutTimer?.cancel();
-    setState(() {
-      _mapError = message;
-      _progress = 100;
-    });
-  }
-
-  bool get _canUseWebView {
-    return widget.enabled && (Platform.isAndroid || Platform.isIOS);
-  }
-
-  void _pushRadarState() {
-    final controller = _controller;
-    if (!_pageReady || controller == null) {
-      return;
-    }
-
-    final stateJson = _radarStateJson();
-    unawaited(controller.runJavaScript('window.setRadarState($stateJson);'));
-  }
-
-  String _radarStateJson() {
-    return jsonEncode(_radarState());
-  }
-
-  Map<String, Object?> _radarState() {
-    final contacts = widget.contacts
-        .map((contact) => _contactToMap(contact))
-        .toList();
-    final hasMe = contacts.any((contact) => contact['isMe'] == true);
-    final location = widget.location;
-    if (!hasMe && location != null) {
-      contacts.insert(0, _locationToMap(location));
-    }
-    contacts.addAll(widget.activities.map(_activityToMap));
-    contacts.add(<String, Object?>{
-      'id': _wongTaiSinMeetupId,
-      'name': _wongTaiSinMeetupName,
-      'lat': _wongTaiSinMeetupLatitude,
-      'lng': _wongTaiSinMeetupLongitude,
-      'accuracyMeters': 0.0,
-      'isMe': false,
-      'isSosActive': false,
-      'isNearby': false,
-      'isMeetup': true,
-      'district': _localizedUiText('黃大仙區'),
-    });
-
-    final center = location == null
-        ? const <String, double>{
-            'lat': _hongKongCenterLatitude,
-            'lng': _hongKongCenterLongitude,
-          }
-        : <String, double>{'lat': location.latitude, 'lng': location.longitude};
-
-    return <String, Object?>{
-      'center': center,
-      'hasLocation': location != null,
-      'contacts': contacts,
-      'locationFocusVersion': widget.locationFocusVersion,
-      'selectedContactId': widget.selectedContactId,
-      'selectedContactFocusVersion': widget.selectedContactFocusVersion,
-    };
-  }
-
-  Map<String, Object?> _contactToMap(RadarContact contact) {
-    return <String, Object?>{
-      'id': contact.id,
-      'name': contact.isMe ? '${contact.name}（我）' : contact.name,
-      'lat': contact.location.latitude,
-      'lng': contact.location.longitude,
-      'accuracyMeters': contact.location.accuracyMeters,
-      'isMe': contact.isMe,
-      'isSosActive': contact.isSosActive,
-      'isNearby': widget.nearbyContactIds.contains(contact.id),
-      'district': _localizedUiText(
-        _districtNameForLocation(contact.location) ?? '未知區域',
-      ),
-    };
-  }
-
-  Map<String, Object?> _locationToMap(DeviceLocation location) {
-    return <String, Object?>{
-      'id': 'current-device',
-      'name': '${widget.displayName}（我）',
-      'lat': location.latitude,
-      'lng': location.longitude,
-      'accuracyMeters': location.accuracyMeters,
-      'isMe': true,
-      'isSosActive': false,
-      'isNearby': false,
-      'district': _localizedUiText(
-        _districtNameForLocation(location) ?? '未知區域',
-      ),
-    };
-  }
-
-  Map<String, Object?> _activityToMap(MeshRadarActivity activity) {
-    final color = _radarActivityColor(activity.type);
-    return <String, Object?>{
-      'id': activity.id,
-      'name': activity.title,
-      'lat': activity.location.latitude,
-      'lng': activity.location.longitude,
-      'accuracyMeters': 0.0,
-      'isMe': false,
-      'isSosActive': false,
-      'isNearby': false,
-      'isActivity': true,
-      'activityType': _localizedUiText(activity.localizedTypeLabel),
-      'activityDetails': _localizedUiText(
-        activity.details.isEmpty ? '未提供活動詳情。' : activity.details,
-      ),
-      'hostName': activity.hostName,
-      'activityColor':
-          '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2)}',
-      'district': _localizedUiText(
-        _districtNameForLocation(activity.location) ?? '未知區域',
-      ),
-    };
-  }
-
-  RadarContact? _contactById(String selectedContactId) {
-    for (final contact in widget.contacts) {
-      if (contact.id == selectedContactId) {
-        return contact;
-      }
-    }
-    return null;
-  }
-
-  MeshRadarActivity? _activityById(String activityId) {
-    for (final activity in widget.activities) {
-      if (activity.id == activityId) {
-        return activity;
-      }
-    }
-    return null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (widget.apiKey.isEmpty) {
-      return const _GoogleMapUnavailable(
-        icon: Icons.key_outlined,
-        title: '未設定 Google Maps API key',
-        message: '用 --dart-define=GOOGLE_MAPS_API_KEY=你的_key 建置後可使用線上地圖。',
-      );
-    }
-
-    if (!_canUseWebView) {
-      return const _GoogleMapUnavailable(
-        icon: Icons.public_off,
-        title: '線上地圖未啟用',
-        message: '目前平台或測試建置未開啟 WebView，請使用離線地圖。',
-      );
-    }
-
-    final controller = _controller;
-    if (controller == null) {
-      return const _GoogleMapUnavailable(
-        icon: Icons.map_outlined,
-        title: '正在準備線上地圖',
-        message: 'Google Map 初始化中。',
-      );
-    }
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Stack(
-        children: [
-          Positioned.fill(child: WebViewWidget(controller: controller)),
-          if (_mapError != null)
-            Positioned.fill(
-              child: _GoogleMapUnavailable(
-                icon: Icons.map_outlined,
-                title: 'Google Map 載入失敗',
-                message: _mapError!,
-                actionLabel: '重試',
-                onAction: _retryMap,
-              ),
-            ),
-          if (_progress < 100)
-            Positioned(
-              left: 0,
-              top: 0,
-              right: 0,
-              child: LinearProgressIndicator(
-                value: _progress == 0 ? null : _progress / 100,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MapContactQuoteAction extends StatelessWidget {
-  const _MapContactQuoteAction({
-    required this.contact,
-    required this.onQuoteContactName,
-  });
-
-  final RadarContact contact;
-  final ValueChanged<String> onQuoteContactName;
-
-  @override
-  Widget build(BuildContext context) {
-    final districtName = _districtNameForLocation(contact.location);
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xF7FFFFFF),
-        border: Border.all(color: const Color(0xFFD7DED7)),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x26000000),
-            blurRadius: 12,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 230),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.person_pin_circle, size: 18),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    LocalizedText(
-                      contact.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: const Color(0xFF17211E),
-                      ),
-                    ),
-                    if (districtName != null)
-                      LocalizedText(
-                        districtName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: const Color(0xFF66756D),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              LocalizedTooltip(
-                message: '引用名稱聊天',
-                child: IconButton.filledTonal(
-                  onPressed: () => onQuoteContactName(contact.name),
-                  icon: const Icon(Icons.format_quote, size: 18),
-                  style: IconButton.styleFrom(
-                    fixedSize: const Size(34, 34),
-                    minimumSize: const Size(34, 34),
-                    padding: EdgeInsets.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _GoogleMapUnavailable extends StatelessWidget {
-  const _GoogleMapUnavailable({
-    required this.icon,
-    required this.title,
-    required this.message,
-    this.actionLabel,
-    this.onAction,
-  });
-
-  final IconData icon;
-  final String title;
-  final String message;
-  final String? actionLabel;
-  final VoidCallback? onAction;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7F8F4),
-        border: Border.all(color: const Color(0xFFD7DED7)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: const Color(0xFF0D7C66), size: 34),
-              const SizedBox(height: 10),
-              LocalizedText(
-                title,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: const Color(0xFF17211E),
-                ),
-              ),
-              const SizedBox(height: 6),
-              LocalizedText(
-                message,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF66756D),
-                  height: 1.35,
-                ),
-              ),
-              if (actionLabel != null && onAction != null) ...[
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: onAction,
-                  icon: const Icon(Icons.refresh),
-                  label: LocalizedText(actionLabel!),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-String _googleRadarMapHtml({
-  required String apiKey,
-  required String mapId,
-  required String initialStateJson,
-}) {
-  final encodedKey = Uri.encodeQueryComponent(apiKey);
-  final mapIdOption = mapId.isEmpty ? '' : ', mapId: ${jsonEncode(mapId)}';
-  final loadingLabel = jsonEncode(_localizedUiText('載入 Google Map'));
-  final sosPrefix = jsonEncode(_localizedUiText('求救 · '));
-  final lightPointLabel = jsonEncode(_localizedUiText('光點'));
-  final meetupLabel = jsonEncode(_localizedUiText('集合點'));
-  final meLabel = jsonEncode(_localizedUiText('我'));
-  final nearbyLabel = jsonEncode(_localizedUiText('近'));
-  final unknownDistrictLabel = jsonEncode(_localizedUiText('未知區域'));
-  final quoteLabel = jsonEncode(_localizedUiText('引用'));
-
-  return '''
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <style>
-    html, body, #map {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      background: #edf3ef;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    #loading {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      background: #f7f8f4;
-      color: #17211e;
-      font-size: 14px;
-      font-weight: 700;
-    }
-    .gm-style .gm-style-iw-c {
-      padding: 8px !important;
-      border-radius: 8px !important;
-    }
-    .gm-style .gm-style-iw-d {
-      overflow: hidden !important;
-    }
-    .gm-ui-hover-effect {
-      width: 24px !important;
-      height: 24px !important;
-    }
-    .gm-ui-hover-effect > span {
-      width: 12px !important;
-      height: 12px !important;
-      margin: 6px !important;
-    }
-    .info {
-      max-width: 176px;
-      color: #17211e;
-      line-height: 1.25;
-      font-size: 12px;
-    }
-    .info-title {
-      font-weight: 800;
-      margin-bottom: 3px;
-      max-width: 142px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .info-meta {
-      color: #66756d;
-      font-size: 11px;
-      max-width: 142px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .info-row {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-    }
-    .info-copy {
-      min-width: 30px;
-      height: 26px;
-      border: 0;
-      border-radius: 7px;
-      background: #e0f2e9;
-      color: #0d7c66;
-      font-size: 11px;
-      font-weight: 800;
-      padding: 0 7px;
-      cursor: pointer;
-    }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <div id="loading"></div>
-  <script>
-    window.__RADAR_STATE__ = $initialStateJson;
-    const ui = {
-      loading: $loadingLabel,
-      sosPrefix: $sosPrefix,
-      lightPoint: $lightPointLabel,
-      meetup: $meetupLabel,
-      me: $meLabel,
-      nearby: $nearbyLabel,
-      unknownDistrict: $unknownDistrictLabel,
-      quote: $quoteLabel
-    };
-    document.getElementById('loading').textContent = ui.loading;
-
-    let map;
-    let infoWindow;
-    let markers = {};
-    let accuracyCircles = {};
-    let markerContacts = {};
-    let lastFocusVersion = -1;
-    let lastLocationFocusVersion = -1;
-    let lastCenterKey = '';
-    let meetupFocused = false;
-    let locationFocused = false;
-    let pendingLocationFocus = false;
-    let mapReadyPosted = false;
-    let mapErrorPosted = false;
-
-    const hongKongCenter = {
-      lat: $_hongKongCenterLatitude,
-      lng: $_hongKongCenterLongitude
-    };
-
-    function initRadarMap() {
-      try {
-        const state = window.__RADAR_STATE__ || {};
-        const center = normalizePosition(state.center) || hongKongCenter;
-        map = new google.maps.Map(document.getElementById('map'), {
-          center,
-          zoom: 11,
-          clickableIcons: false,
-          fullscreenControl: false,
-          mapTypeControl: false,
-          streetViewControl: false,
-          gestureHandling: 'greedy'$mapIdOption
-        });
-        infoWindow = new google.maps.InfoWindow({ maxWidth: 190 });
-        map.addListener('click', () => postSelection(''));
-        google.maps.event.addListenerOnce(map, 'tilesloaded', () => {
-          const loading = document.getElementById('loading');
-          if (loading) {
-            loading.style.display = 'none';
-          }
-          postMapReady();
-        });
-        window.setRadarState(state);
-      } catch (error) {
-        postMapError('Google Map 初始化失敗：' + errorMessage(error));
-      }
-    }
-
-    window.initRadarMap = initRadarMap;
-    window.gm_authFailure = function() {
-      postMapError('Google Maps API key 被拒絕。請檢查 key、Maps JavaScript API、網域或 app 限制。');
-    };
-    window.onerror = function(message, source, lineno, colno, error) {
-      postMapError('Google Map JavaScript 錯誤：' + errorMessage(error || message));
-      return false;
-    };
-    window.handleGoogleMapsScriptError = function() {
-      postMapError('未能下載 Google Maps JavaScript。請檢查網絡、防火牆或 Google 服務是否可連線。');
-    };
-
-    window.setRadarState = function(state) {
-      window.__RADAR_STATE__ = state || {};
-      if (!map || !window.google || !google.maps) {
-        return;
-      }
-      renderRadarState(window.__RADAR_STATE__);
-    };
-
-    function renderRadarState(state) {
-      const contacts = Array.isArray(state.contacts) ? state.contacts : [];
-      const nextIds = new Set();
-      contacts.forEach((contact) => {
-        const id = addOrUpdateContactMarker(contact);
-        if (id) {
-          nextIds.add(id);
-        }
-      });
-      removeMissingMarkers(nextIds);
-
-      const locationFocusVersion = Number(state.locationFocusVersion || 0);
-      if (lastLocationFocusVersion !== locationFocusVersion) {
-        if (lastLocationFocusVersion >= 0) {
-          pendingLocationFocus = true;
-        }
-        meetupFocused = false;
-        lastCenterKey = '';
-        lastLocationFocusVersion = locationFocusVersion;
-      }
-
-      const center = normalizePosition(state.center);
-      if (pendingLocationFocus && state.hasLocation === true && center) {
-        pendingLocationFocus = false;
-        locationFocused = true;
-        map.panTo(center);
-        map.setZoom(17);
-        lastCenterKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
-        infoWindow.close();
-        return;
-      }
-
-      const selectedId = state.selectedContactId
-        ? String(state.selectedContactId)
-        : '';
-      const selectedMarker = selectedId ? markers[selectedId] : null;
-      if (selectedMarker) {
-        meetupFocused = false;
-        locationFocused = false;
-        const focusVersion = Number(state.selectedContactFocusVersion || 0);
-        if (lastFocusVersion !== focusVersion) {
-          map.panTo(selectedMarker.getPosition());
-          map.setZoom(Math.max(map.getZoom() || 11, 16));
-          lastFocusVersion = focusVersion;
-        }
-        openInfo(selectedMarker, markerContacts[selectedId]);
-        return;
-      }
-
-      if (center && locationFocused) {
-        const centerKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
-        if (centerKey !== lastCenterKey) {
-          map.panTo(center);
-          lastCenterKey = centerKey;
-        }
-        if ((map.getZoom() || 0) < 17) {
-          map.setZoom(17);
-        }
-      } else if (center && !meetupFocused) {
-        const centerKey = center.lat.toFixed(6) + ',' + center.lng.toFixed(6);
-        if (centerKey !== lastCenterKey) {
-          map.setCenter(center);
-          lastCenterKey = centerKey;
-          if ((map.getZoom() || 0) > 13) {
-            map.setZoom(11);
-          }
-        }
-      }
-      infoWindow.close();
-    }
-
-    function clearMarkers() {
-      Object.values(markers).forEach((marker) => marker.setMap(null));
-      Object.values(accuracyCircles).forEach((circle) => circle.setMap(null));
-      markers = {};
-      accuracyCircles = {};
-      markerContacts = {};
-    }
-
-    function removeMissingMarkers(nextIds) {
-      Object.keys(markers).forEach((id) => {
-        if (nextIds.has(id)) {
-          return;
-        }
-        markers[id].setMap(null);
-        delete markers[id];
-        delete markerContacts[id];
-        if (accuracyCircles[id]) {
-          accuracyCircles[id].setMap(null);
-          delete accuracyCircles[id];
-        }
-      });
-    }
-
-    function markerOptions(contact, position) {
-      const isMe = contact.isMe === true;
-      const isNearby = contact.isNearby === true;
-      const isSosActive = contact.isSosActive === true;
-      const isMeetup = contact.isMeetup === true;
-      const isActivity = contact.isActivity === true;
-      const activityColor = contact.activityColor
-        ? String(contact.activityColor)
-        : '#0d7c66';
-      return {
-        map,
-        position,
-        title: isActivity
-          ? String(contact.activityType || '') + ' · ' + String(contact.name || '')
-          : isSosActive
-          ? ui.sosPrefix + String(contact.name || ui.lightPoint)
-          : String(contact.name || ui.lightPoint),
-        label: isActivity
-          ? { text: String(contact.activityType || ''), color: '#ffffff', fontWeight: '900' }
-          : isMeetup
-          ? { text: ui.meetup, color: '#5d4037', fontWeight: '900' }
-          : isSosActive
-          ? { text: 'SOS', color: '#ffffff', fontWeight: '900' }
-          : isMe
-          ? { text: ui.me, color: '#ffffff', fontWeight: '800' }
-          : isNearby
-            ? { text: ui.nearby, color: '#ffffff', fontWeight: '800' }
-            : null,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: isActivity ? 13 : isMeetup ? 12 : isSosActive ? 13 : isMe ? 12 : 9,
-          fillColor: isActivity
-            ? activityColor
-            : isSosActive
-            ? '#b00020'
-            : isMeetup ? '#f9a825'
-            : isMe ? '#0d7c66' : isNearby ? '#d73535' : '#1f6feb',
-          fillOpacity: 1,
-          strokeColor: isSosActive ? '#ffdad6' : '#ffffff',
-          strokeWeight: isSosActive || isActivity ? 4 : 3
-        },
-        zIndex: isActivity ? 24 : isMeetup ? 25 : isSosActive ? 30 : isMe ? 20 : isNearby ? 15 : 10
-      };
-    }
-
-    function addOrUpdateContactMarker(contact) {
-      const id = String(contact.id || '');
-      const position = normalizePosition({
-        lat: contact.lat,
-        lng: contact.lng
-      });
-      if (!id || !position) {
-        return '';
-      }
-
-      const isMe = contact.isMe === true;
-      let marker = markers[id];
-      if (marker) {
-        marker.setOptions(markerOptions(contact, position));
-      } else {
-        marker = new google.maps.Marker(markerOptions(contact, position));
-        marker.addListener('click', () => {
-          openInfo(marker, markerContacts[id]);
-          if (markerContacts[id]?.isActivity === true) {
-            meetupFocused = false;
-            locationFocused = false;
-            map.panTo(marker.getPosition());
-            map.setZoom(Math.max(map.getZoom() || 11, 15));
-            postActivity(id);
-            return;
-          }
-          if (markerContacts[id]?.isMeetup === true) {
-            meetupFocused = true;
-            locationFocused = false;
-            map.panTo(marker.getPosition());
-            map.setZoom(Math.max(map.getZoom() || 11, 17));
-            return;
-          }
-          meetupFocused = false;
-          locationFocused = false;
-          postSelection(id);
-        });
-        markers[id] = marker;
-      }
-
-      markerContacts[id] = contact;
-
-      const accuracy = Number(contact.accuracyMeters || 0);
-      if (isMe && Number.isFinite(accuracy) && accuracy > 0) {
-        if (accuracyCircles[id]) {
-          accuracyCircles[id].setOptions({
-            center: position,
-            radius: accuracy
-          });
-        } else {
-          accuracyCircles[id] = new google.maps.Circle({
-            map,
-            center: position,
-            radius: accuracy,
-            strokeColor: '#0d7c66',
-            strokeOpacity: 0.36,
-            strokeWeight: 1,
-            fillColor: '#0d7c66',
-            fillOpacity: 0.12
-          });
-        }
-      } else if (accuracyCircles[id]) {
-        accuracyCircles[id].setMap(null);
-        delete accuracyCircles[id];
-      }
-
-      return id;
-    }
-
-    function openInfo(marker, contact) {
-      if (!contact) {
-        return;
-      }
-      const name = String(contact.name || ui.lightPoint);
-      const isSosActive = contact.isSosActive === true;
-      const isActivity = contact.isActivity === true;
-      const district = contact.district ? String(contact.district) : ui.unknownDistrict;
-      const accuracy = Math.round(Number(contact.accuracyMeters || 0));
-      const meta = isActivity
-        ? String(contact.hostName || '') + (contact.activityDetails
-            ? ' · ' + String(contact.activityDetails)
-            : '')
-        : accuracy > 0
-        ? district + ' · +/- ' + accuracy + 'm'
-        : district;
-
-      const container = document.createElement('div');
-      container.className = 'info';
-
-      const row = document.createElement('div');
-      row.className = 'info-row';
-
-      const text = document.createElement('div');
-      text.style.minWidth = '0';
-
-      const title = document.createElement('div');
-      title.className = 'info-title';
-      title.textContent = isActivity
-        ? String(contact.activityType || '') + ' · ' + name
-        : isSosActive ? ui.sosPrefix + name : name;
-      if (isActivity && contact.activityColor) {
-        title.style.color = String(contact.activityColor);
-      }
-      if (isSosActive) {
-        title.style.color = '#b00020';
-      }
-
-      const metaLine = document.createElement('div');
-      metaLine.className = 'info-meta';
-      metaLine.textContent = meta;
-
-      text.appendChild(title);
-      text.appendChild(metaLine);
-      row.appendChild(text);
-
-      if (contact.isMe !== true && contact.isMeetup !== true) {
-        const quoteButton = document.createElement('button');
-        quoteButton.type = 'button';
-        quoteButton.className = 'info-copy';
-        quoteButton.textContent = ui.quote;
-        quoteButton.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          postQuote(contact.id || '');
-        });
-        row.appendChild(quoteButton);
-      }
-
-      container.appendChild(row);
-      infoWindow.setContent(container);
-      infoWindow.open({ map, anchor: marker });
-    }
-
-    function normalizePosition(value) {
-      if (!value) {
-        return null;
-      }
-      const lat = Number(value.lat);
-      const lng = Number(value.lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return null;
-      }
-      return { lat, lng };
-    }
-
-    function postSelection(contactId) {
-      if (window.RadarBridge && window.RadarBridge.postMessage) {
-        window.RadarBridge.postMessage(JSON.stringify({
-          action: 'select',
-          contactId: String(contactId || '')
-        }));
-      }
-    }
-
-    function postQuote(contactId) {
-      if (window.RadarBridge && window.RadarBridge.postMessage) {
-        window.RadarBridge.postMessage(JSON.stringify({
-          action: 'quote',
-          contactId: String(contactId || '')
-        }));
-      }
-    }
-
-    function postActivity(activityId) {
-      if (window.RadarBridge && window.RadarBridge.postMessage) {
-        window.RadarBridge.postMessage(JSON.stringify({
-          action: 'activity',
-          contactId: String(activityId || '')
-        }));
-      }
-    }
-
-    function postMapReady() {
-      if (mapReadyPosted || mapErrorPosted) {
-        return;
-      }
-      mapReadyPosted = true;
-      if (window.RadarBridge && window.RadarBridge.postMessage) {
-        window.RadarBridge.postMessage(JSON.stringify({
-          action: 'mapReady'
-        }));
-      }
-    }
-
-    function postMapError(message) {
-      if (mapReadyPosted || mapErrorPosted) {
-        return;
-      }
-      mapErrorPosted = true;
-      const loading = document.getElementById('loading');
-      if (loading) {
-        loading.textContent = message || 'Google Map 載入失敗';
-      }
-      if (window.RadarBridge && window.RadarBridge.postMessage) {
-        window.RadarBridge.postMessage(JSON.stringify({
-          action: 'mapError',
-          message: message || 'Google Map 載入失敗'
-        }));
-      }
-    }
-
-    function errorMessage(error) {
-      if (!error) {
-        return '未知錯誤';
-      }
-      if (typeof error === 'string') {
-        return error;
-      }
-      return error.message || String(error);
-    }
-  </script>
-  <script async defer onerror="handleGoogleMapsScriptError()" src="https://maps.googleapis.com/maps/api/js?key=$encodedKey&v=weekly&callback=initRadarMap"></script>
-</body>
-</html>
-''';
-}
-
-class _MapDistrictFocusBanner extends StatelessWidget {
-  const _MapDistrictFocusBanner({required this.currentDistrictName});
-
-  final String currentDistrictName;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.topLeft,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: const Color(0xEFFFFFFF),
-          border: Border.all(color: const Color(0xFFD7DED7)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.explore_outlined, size: 16),
-              const SizedBox(width: 6),
-              Flexible(
-                child: LocalizedText(
-                  currentDistrictName,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: const Color(0xFF17211E),
-                    fontWeight: FontWeight.w800,
-                    height: 1.15,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _HongKongMapPainter extends CustomPainter {
-  const _HongKongMapPainter({
-    required this.location,
-    required this.contacts,
-    required this.nearbyContactIds,
-    required this.refreshSignature,
-    required this.selectedContactId,
-    required this.currentDistrictName,
-    required this.visibleDistricts,
-    required this.mapBounds,
-    required this.textScaler,
-  });
-
-  static const double _minLatitude = 22.13;
-  static const double _maxLatitude = 22.57;
-  static const double _minLongitude = 113.82;
-  static const double _maxLongitude = 114.43;
-
-  final DeviceLocation? location;
-  final List<RadarContact> contacts;
-  final Set<String> nearbyContactIds;
-  final String refreshSignature;
-  final String? selectedContactId;
-  final String? currentDistrictName;
-  final List<_DistrictShape> visibleDistricts;
-  final _MapBounds mapBounds;
-  final TextScaler textScaler;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    final mapRect = _fitMapRect(rect.deflate(10), mapBounds);
-    _drawFocusedDistricts(canvas, mapRect);
-
-    final currentLocation = location;
-    final visibleContacts = contacts
-        .where((contact) => mapBounds.containsLocation(contact.location))
-        .toList();
-    if (visibleContacts.isNotEmpty) {
-      _drawContacts(canvas, mapRect, visibleContacts);
-    } else if (currentLocation != null &&
-        mapBounds.containsLocation(currentLocation)) {
-      _drawLocation(canvas, mapRect, currentLocation);
-    } else {
-      _drawEmptyHint(canvas, mapRect);
-    }
-
-    _drawSelectedContactLabel(canvas, mapRect);
-  }
-
-  void _drawFocusedDistricts(Canvas canvas, Rect rect) {
-    final focusedName = currentDistrictName;
-    if (focusedName == null) {
-      return;
-    }
-
-    for (final district in visibleDistricts) {
-      if (district.name != focusedName) {
-        continue;
-      }
-
-      final fillPaint = Paint()..color = const Color(0x55FFF1A6);
-      final outlinePaint = Paint()
-        ..color = const Color(0xFF0D7C66)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3;
-
-      _drawLand(canvas, rect, fillPaint, outlinePaint, district.points);
-    }
-  }
-
-  void _drawLand(
-    Canvas canvas,
-    Rect rect,
-    Paint fill,
-    Paint outline,
-    List<_MapPoint> points,
-  ) {
-    final path = Path();
-    for (var i = 0; i < points.length; i += 1) {
-      final point = _project(points[i], rect);
-      if (i == 0) {
-        path.moveTo(point.dx, point.dy);
-      } else {
-        path.lineTo(point.dx, point.dy);
-      }
-    }
-    path.close();
-    canvas.drawPath(path, fill);
-    canvas.drawPath(path, outline);
-  }
-
-  void _drawEmptyHint(Canvas canvas, Rect rect) {
-    final painter = TextPainter(
-      text: TextSpan(
-        text: _localizedUiText('按「定位」在地圖顯示你的光點'),
-        style: TextStyle(
-          color: const Color(0xFF4B5F56),
-          fontWeight: FontWeight.w700,
-          fontSize: textScaler.scale(13),
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    )..layout(maxWidth: rect.width - 24);
-    final offset = rect.center - Offset(painter.width / 2, painter.height / 2);
-    painter.paint(canvas, offset);
-  }
-
-  void _drawContacts(Canvas canvas, Rect rect, List<RadarContact> contacts) {
-    final sorted = contacts.toList()
-      ..sort((a, b) {
-        if (a.isSosActive != b.isSosActive) {
-          return a.isSosActive ? 1 : -1;
-        }
-        if (a.isMe == b.isMe) {
-          return a.name.compareTo(b.name);
-        }
-        return a.isMe ? 1 : -1;
-      });
-
-    for (final contact in sorted) {
-      _drawRadarContact(canvas, rect, contact);
-    }
-  }
-
-  void _drawLocation(Canvas canvas, Rect rect, DeviceLocation location) {
-    _drawMarker(
-      canvas,
-      rect,
-      location,
-      isMe: true,
-      isSelected: selectedContactId == null,
-      accuracyMeters: location.accuracyMeters,
-    );
-  }
-
-  void _drawRadarContact(Canvas canvas, Rect rect, RadarContact contact) {
-    final isNearby = nearbyContactIds.contains(contact.id);
-    final isSelected = selectedContactId == contact.id;
-    _drawMarker(
-      canvas,
-      rect,
-      contact.location,
-      isMe: contact.isMe,
-      isSosActive: contact.isSosActive,
-      isNearby: isNearby,
-      isSelected: isSelected,
-      accuracyMeters: contact.location.accuracyMeters,
-    );
-  }
-
-  void _drawMarker(
-    Canvas canvas,
-    Rect rect,
-    DeviceLocation location, {
-    required bool isMe,
-    bool isSosActive = false,
-    bool isNearby = false,
-    bool isSelected = false,
-    required double accuracyMeters,
-  }) {
-    final visiblePoint = _project(
-      mapBounds.clampPoint(_MapPoint(location.latitude, location.longitude)),
-      rect,
-    );
-    final accuracyRadius = max(10.0, min(44.0, accuracyMeters / 20));
-    final accuracyPaint = Paint()
-      ..color = isSosActive
-          ? const Color(0x55FF3B30)
-          : isMe
-          ? const Color(0x3341B6E6)
-          : isNearby
-          ? const Color(0x66FF3B30)
-          : const Color(0x33FF6B6B);
-    final ringPaint = Paint()
-      ..color = isSosActive
-          ? const Color(0xFFB00020)
-          : isMe
-          ? const Color(0xFF0D7C66)
-          : isNearby
-          ? const Color(0xFFFF3B30)
-          : const Color(0xFFC4512C)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = isSelected
-          ? 4
-          : isSosActive
-          ? 3.5
-          : isNearby
-          ? 3
-          : 2;
-    final dotPaint = Paint()
-      ..color = isSosActive
-          ? const Color(0xFFFFDAD6)
-          : isMe
-          ? const Color(0xFFFFC857)
-          : isNearby
-          ? const Color(0xFFFFF0A6)
-          : const Color(0xFFFFFFFF);
-
-    canvas.drawCircle(visiblePoint, accuracyRadius, accuracyPaint);
-    canvas.drawCircle(
-      visiblePoint,
-      isSelected
-          ? 14
-          : isSosActive
-          ? 13
-          : isNearby
-          ? 11
-          : 8,
-      ringPaint,
-    );
-    canvas.drawCircle(
-      visiblePoint,
-      isSelected
-          ? 7
-          : isSosActive
-          ? 6.5
-          : isNearby
-          ? 6
-          : 4.5,
-      dotPaint,
-    );
-    if (isSosActive) {
-      final labelPainter = TextPainter(
-        text: TextSpan(
-          text: 'SOS',
-          style: TextStyle(
-            color: const Color(0xFFB00020),
-            fontSize: textScaler.scale(9),
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      final labelOffset = Offset(
-        visiblePoint.dx - labelPainter.width / 2,
-        visiblePoint.dy + 15,
-      );
-      final labelRect = Rect.fromLTWH(
-        labelOffset.dx - 4,
-        labelOffset.dy - 2,
-        labelPainter.width + 8,
-        labelPainter.height + 4,
-      );
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(labelRect, const Radius.circular(5)),
-        Paint()..color = const Color(0xEEFFFFFF),
-      );
-      labelPainter.paint(canvas, labelOffset);
-    }
-  }
-
-  void _drawSelectedContactLabel(Canvas canvas, Rect rect) {
-    final selectedContact = _selectedContact();
-    if (selectedContact == null) {
-      return;
-    }
-    if (!mapBounds.containsLocation(selectedContact.location)) {
-      return;
-    }
-
-    final visiblePoint = _project(
-      mapBounds.clampPoint(
-        _MapPoint(
-          selectedContact.location.latitude,
-          selectedContact.location.longitude,
-        ),
-      ),
-      rect,
-    );
-    final districtName = _districtNameForLocation(selectedContact.location);
-    final name = selectedContact.isSosActive
-        ? '求救 · ${selectedContact.name}'
-        : selectedContact.name;
-    final label = districtName == null ? name : '$name · $districtName';
-
-    _drawLocationLabel(
-      canvas,
-      rect,
-      visiblePoint,
-      label,
-      isMe: selectedContact.isMe,
-      isSosActive: selectedContact.isSosActive,
-      isNearby: nearbyContactIds.contains(selectedContact.id),
-    );
-  }
-
-  RadarContact? _selectedContact() {
-    final selectedId = selectedContactId;
-    if (selectedId == null) {
-      return null;
-    }
-
-    for (final contact in contacts) {
-      if (contact.id == selectedId) {
-        return contact;
-      }
-    }
-    return null;
-  }
-
-  void _drawLocationLabel(
-    Canvas canvas,
-    Rect rect,
-    Offset point,
-    String label, {
-    required bool isMe,
-    bool isSosActive = false,
-    bool isNearby = false,
-  }) {
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: _localizedUiText(label),
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: textScaler.scale(13),
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final bubbleSize = Size(textPainter.width + 20, textPainter.height + 10);
-    final left = (point.dx - bubbleSize.width / 2).clamp(
-      rect.left + 4,
-      rect.right - bubbleSize.width - 4,
-    );
-    final top = max(rect.top + 4, point.dy - bubbleSize.height - 18);
-    final bubble = RRect.fromRectAndRadius(
-      Rect.fromLTWH(left, top, bubbleSize.width, bubbleSize.height),
-      const Radius.circular(8),
-    );
-    final bubblePaint = Paint()
-      ..color = isSosActive
-          ? const Color(0xFFB00020)
-          : isMe
-          ? const Color(0xFF17211E)
-          : isNearby
-          ? const Color(0xFFB00020)
-          : const Color(0xFF7A2E22);
-    final pointerPath = Path()
-      ..moveTo(point.dx, top + bubbleSize.height + 8)
-      ..lineTo(point.dx - 6, top + bubbleSize.height - 1)
-      ..lineTo(point.dx + 6, top + bubbleSize.height - 1)
-      ..close();
-
-    canvas.drawRRect(bubble, bubblePaint);
-    canvas.drawPath(pointerPath, bubblePaint);
-    textPainter.paint(
-      canvas,
-      Offset(
-        left + (bubbleSize.width - textPainter.width) / 2,
-        top + (bubbleSize.height - textPainter.height) / 2,
-      ),
-    );
-  }
-
-  Offset _project(_MapPoint point, Rect rect) {
-    return _projectMapPoint(point, rect, mapBounds);
-  }
-
-  @override
-  bool shouldRepaint(covariant _HongKongMapPainter oldDelegate) {
-    return oldDelegate.refreshSignature != refreshSignature ||
-        oldDelegate.selectedContactId != selectedContactId ||
-        oldDelegate.currentDistrictName != currentDistrictName ||
-        oldDelegate.visibleDistricts != visibleDistricts ||
-        oldDelegate.mapBounds != mapBounds ||
-        oldDelegate.textScaler != textScaler;
-  }
-
-  static const List<_DistrictShape> _districts = [
-    _DistrictShape(
-      name: '屯門區',
-      color: Color(0xFFA9DCA4),
-      labelPoint: _MapPoint(22.39, 113.96),
-      points: [
-        _MapPoint(22.46, 113.86),
-        _MapPoint(22.43, 114.03),
-        _MapPoint(22.36, 114.02),
-        _MapPoint(22.34, 113.92),
-        _MapPoint(22.38, 113.84),
-      ],
-    ),
-    _DistrictShape(
-      name: '元朗區',
-      color: Color(0xFFAED2EC),
-      labelPoint: _MapPoint(22.45, 114.05),
-      points: [
-        _MapPoint(22.52, 113.98),
-        _MapPoint(22.52, 114.14),
-        _MapPoint(22.44, 114.15),
-        _MapPoint(22.39, 114.04),
-        _MapPoint(22.43, 114.00),
-      ],
-    ),
-    _DistrictShape(
-      name: '北區',
-      color: Color(0xFFF2B0BD),
-      labelPoint: _MapPoint(22.52, 114.18),
-      points: [
-        _MapPoint(22.57, 114.10),
-        _MapPoint(22.55, 114.29),
-        _MapPoint(22.48, 114.28),
-        _MapPoint(22.46, 114.14),
-        _MapPoint(22.52, 114.14),
-      ],
-    ),
-    _DistrictShape(
-      name: '大埔區',
-      color: Color(0xFFA9DDD2),
-      labelPoint: _MapPoint(22.45, 114.22),
-      points: [
-        _MapPoint(22.50, 114.18),
-        _MapPoint(22.48, 114.34),
-        _MapPoint(22.40, 114.32),
-        _MapPoint(22.38, 114.21),
-        _MapPoint(22.44, 114.15),
-      ],
-    ),
-    _DistrictShape(
-      name: '西貢區',
-      color: Color(0xFFC8ADA7),
-      labelPoint: _MapPoint(22.35, 114.31),
-      points: [
-        _MapPoint(22.43, 114.28),
-        _MapPoint(22.42, 114.42),
-        _MapPoint(22.28, 114.40),
-        _MapPoint(22.27, 114.27),
-        _MapPoint(22.34, 114.23),
-      ],
-    ),
-    _DistrictShape(
-      name: '沙田區',
-      color: Color(0xFFF4D1A0),
-      labelPoint: _MapPoint(22.38, 114.20),
-      points: [
-        _MapPoint(22.42, 114.15),
-        _MapPoint(22.41, 114.25),
-        _MapPoint(22.34, 114.24),
-        _MapPoint(22.33, 114.16),
-      ],
-    ),
-    _DistrictShape(
-      name: '荃灣區',
-      color: Color(0xFFBDE2A6),
-      labelPoint: _MapPoint(22.37, 114.09),
-      points: [
-        _MapPoint(22.41, 114.02),
-        _MapPoint(22.40, 114.15),
-        _MapPoint(22.34, 114.14),
-        _MapPoint(22.33, 114.04),
-      ],
-    ),
-    _DistrictShape(
-      name: '葵青區',
-      color: Color(0xFF8CD5B0),
-      labelPoint: _MapPoint(22.33, 114.12),
-      points: [
-        _MapPoint(22.35, 114.08),
-        _MapPoint(22.35, 114.16),
-        _MapPoint(22.30, 114.16),
-        _MapPoint(22.29, 114.10),
-      ],
-    ),
-    _DistrictShape(
-      name: '深水埗',
-      color: Color(0xFFE2A1B4),
-      labelPoint: _MapPoint(22.33, 114.16),
-      points: [
-        _MapPoint(22.35, 114.13),
-        _MapPoint(22.35, 114.18),
-        _MapPoint(22.31, 114.18),
-        _MapPoint(22.31, 114.14),
-      ],
-    ),
-    _DistrictShape(
-      name: '黃大仙',
-      color: Color(0xFFF0C3A7),
-      labelPoint: _MapPoint(22.34, 114.20),
-      points: [
-        _MapPoint(22.36, 114.18),
-        _MapPoint(22.36, 114.24),
-        _MapPoint(22.32, 114.23),
-        _MapPoint(22.33, 114.18),
-      ],
-    ),
-    _DistrictShape(
-      name: '九龍城',
-      color: Color(0xFFEFAE90),
-      labelPoint: _MapPoint(22.32, 114.19),
-      points: [
-        _MapPoint(22.33, 114.17),
-        _MapPoint(22.33, 114.22),
-        _MapPoint(22.30, 114.22),
-        _MapPoint(22.30, 114.17),
-      ],
-    ),
-    _DistrictShape(
-      name: '觀塘',
-      color: Color(0xFFE9A884),
-      labelPoint: _MapPoint(22.31, 114.24),
-      points: [
-        _MapPoint(22.33, 114.22),
-        _MapPoint(22.32, 114.27),
-        _MapPoint(22.29, 114.27),
-        _MapPoint(22.29, 114.22),
-      ],
-    ),
-    _DistrictShape(
-      name: '油尖旺',
-      color: Color(0xFFE6D39A),
-      labelPoint: _MapPoint(22.305, 114.165),
-      points: [
-        _MapPoint(22.32, 114.15),
-        _MapPoint(22.32, 114.18),
-        _MapPoint(22.29, 114.18),
-        _MapPoint(22.29, 114.15),
-      ],
-    ),
-    _DistrictShape(
-      name: '中西區',
-      color: Color(0xFFD7C4EE),
-      labelPoint: _MapPoint(22.285, 114.145),
-      points: [
-        _MapPoint(22.30, 114.11),
-        _MapPoint(22.30, 114.16),
-        _MapPoint(22.27, 114.16),
-        _MapPoint(22.265, 114.12),
-      ],
-    ),
-    _DistrictShape(
-      name: '灣仔區',
-      color: Color(0xFFEEC767),
-      labelPoint: _MapPoint(22.275, 114.175),
-      points: [
-        _MapPoint(22.29, 114.16),
-        _MapPoint(22.29, 114.19),
-        _MapPoint(22.265, 114.20),
-        _MapPoint(22.265, 114.16),
-      ],
-    ),
-    _DistrictShape(
-      name: '東區',
-      color: Color(0xFFF3A3A8),
-      labelPoint: _MapPoint(22.275, 114.225),
-      points: [
-        _MapPoint(22.29, 114.19),
-        _MapPoint(22.29, 114.28),
-        _MapPoint(22.24, 114.28),
-        _MapPoint(22.25, 114.20),
-      ],
-    ),
-    _DistrictShape(
-      name: '南區',
-      color: Color(0xFFBFB8E8),
-      labelPoint: _MapPoint(22.235, 114.19),
-      points: [
-        _MapPoint(22.26, 114.12),
-        _MapPoint(22.25, 114.28),
-        _MapPoint(22.19, 114.26),
-        _MapPoint(22.20, 114.10),
-      ],
-    ),
-    _DistrictShape(
-      name: '離島區',
-      color: Color(0xFFE7C86D),
-      labelPoint: _MapPoint(22.24, 113.94),
-      points: [
-        _MapPoint(22.33, 113.85),
-        _MapPoint(22.31, 114.05),
-        _MapPoint(22.23, 114.08),
-        _MapPoint(22.18, 113.95),
-        _MapPoint(22.22, 113.82),
-      ],
-    ),
-  ];
-}
+const List<_DistrictShape> _radarDistricts = [
+  _DistrictShape(
+    name: '屯門區',
+    points: [
+      _MapPoint(22.46, 113.86),
+      _MapPoint(22.43, 114.03),
+      _MapPoint(22.36, 114.02),
+      _MapPoint(22.34, 113.92),
+      _MapPoint(22.38, 113.84),
+    ],
+  ),
+  _DistrictShape(
+    name: '元朗區',
+    points: [
+      _MapPoint(22.52, 113.98),
+      _MapPoint(22.52, 114.14),
+      _MapPoint(22.44, 114.15),
+      _MapPoint(22.39, 114.04),
+      _MapPoint(22.43, 114.00),
+    ],
+  ),
+  _DistrictShape(
+    name: '北區',
+    points: [
+      _MapPoint(22.57, 114.10),
+      _MapPoint(22.55, 114.29),
+      _MapPoint(22.48, 114.28),
+      _MapPoint(22.46, 114.14),
+      _MapPoint(22.52, 114.14),
+    ],
+  ),
+  _DistrictShape(
+    name: '大埔區',
+    points: [
+      _MapPoint(22.50, 114.18),
+      _MapPoint(22.48, 114.34),
+      _MapPoint(22.40, 114.32),
+      _MapPoint(22.38, 114.21),
+      _MapPoint(22.44, 114.15),
+    ],
+  ),
+  _DistrictShape(
+    name: '西貢區',
+    points: [
+      _MapPoint(22.43, 114.28),
+      _MapPoint(22.42, 114.42),
+      _MapPoint(22.28, 114.40),
+      _MapPoint(22.27, 114.27),
+      _MapPoint(22.34, 114.23),
+    ],
+  ),
+  _DistrictShape(
+    name: '沙田區',
+    points: [
+      _MapPoint(22.42, 114.15),
+      _MapPoint(22.41, 114.25),
+      _MapPoint(22.34, 114.24),
+      _MapPoint(22.33, 114.16),
+    ],
+  ),
+  _DistrictShape(
+    name: '荃灣區',
+    points: [
+      _MapPoint(22.41, 114.02),
+      _MapPoint(22.40, 114.15),
+      _MapPoint(22.34, 114.14),
+      _MapPoint(22.33, 114.04),
+    ],
+  ),
+  _DistrictShape(
+    name: '葵青區',
+    points: [
+      _MapPoint(22.35, 114.08),
+      _MapPoint(22.35, 114.16),
+      _MapPoint(22.30, 114.16),
+      _MapPoint(22.29, 114.10),
+    ],
+  ),
+  _DistrictShape(
+    name: '深水埗',
+    points: [
+      _MapPoint(22.35, 114.13),
+      _MapPoint(22.35, 114.18),
+      _MapPoint(22.31, 114.18),
+      _MapPoint(22.31, 114.14),
+    ],
+  ),
+  _DistrictShape(
+    name: '黃大仙',
+    points: [
+      _MapPoint(22.36, 114.18),
+      _MapPoint(22.36, 114.24),
+      _MapPoint(22.32, 114.23),
+      _MapPoint(22.33, 114.18),
+    ],
+  ),
+  _DistrictShape(
+    name: '九龍城',
+    points: [
+      _MapPoint(22.33, 114.17),
+      _MapPoint(22.33, 114.22),
+      _MapPoint(22.30, 114.22),
+      _MapPoint(22.30, 114.17),
+    ],
+  ),
+  _DistrictShape(
+    name: '觀塘',
+    points: [
+      _MapPoint(22.33, 114.22),
+      _MapPoint(22.32, 114.27),
+      _MapPoint(22.29, 114.27),
+      _MapPoint(22.29, 114.22),
+    ],
+  ),
+  _DistrictShape(
+    name: '油尖旺',
+    points: [
+      _MapPoint(22.32, 114.15),
+      _MapPoint(22.32, 114.18),
+      _MapPoint(22.29, 114.18),
+      _MapPoint(22.29, 114.15),
+    ],
+  ),
+  _DistrictShape(
+    name: '中西區',
+    points: [
+      _MapPoint(22.30, 114.11),
+      _MapPoint(22.30, 114.16),
+      _MapPoint(22.27, 114.16),
+      _MapPoint(22.265, 114.12),
+    ],
+  ),
+  _DistrictShape(
+    name: '灣仔區',
+    points: [
+      _MapPoint(22.29, 114.16),
+      _MapPoint(22.29, 114.19),
+      _MapPoint(22.265, 114.20),
+      _MapPoint(22.265, 114.16),
+    ],
+  ),
+  _DistrictShape(
+    name: '東區',
+    points: [
+      _MapPoint(22.29, 114.19),
+      _MapPoint(22.29, 114.28),
+      _MapPoint(22.24, 114.28),
+      _MapPoint(22.25, 114.20),
+    ],
+  ),
+  _DistrictShape(
+    name: '南區',
+    points: [
+      _MapPoint(22.26, 114.12),
+      _MapPoint(22.25, 114.28),
+      _MapPoint(22.19, 114.26),
+      _MapPoint(22.20, 114.10),
+    ],
+  ),
+  _DistrictShape(
+    name: '離島區',
+    points: [
+      _MapPoint(22.33, 113.85),
+      _MapPoint(22.31, 114.05),
+      _MapPoint(22.23, 114.08),
+      _MapPoint(22.18, 113.95),
+      _MapPoint(22.22, 113.82),
+    ],
+  ),
+];
 
 class _MapPoint {
   const _MapPoint(this.latitude, this.longitude);
@@ -9122,92 +6530,10 @@ class _MapPoint {
   final double longitude;
 }
 
-class _MapBounds {
-  const _MapBounds({
-    required this.minLatitude,
-    required this.maxLatitude,
-    required this.minLongitude,
-    required this.maxLongitude,
-  });
-
-  static const hongKong = _MapBounds(
-    minLatitude: _HongKongMapPainter._minLatitude,
-    maxLatitude: _HongKongMapPainter._maxLatitude,
-    minLongitude: _HongKongMapPainter._minLongitude,
-    maxLongitude: _HongKongMapPainter._maxLongitude,
-  );
-
-  final double minLatitude;
-  final double maxLatitude;
-  final double minLongitude;
-  final double maxLongitude;
-
-  double get latitudeSpan => max(0.0001, maxLatitude - minLatitude);
-  double get longitudeSpan => max(0.0001, maxLongitude - minLongitude);
-  double get centerLatitude => (minLatitude + maxLatitude) / 2;
-
-  double get physicalAspectRatio {
-    final longitudeScale = cos(_degreesToRadians(centerLatitude)).abs();
-    return max(0.2, longitudeSpan * longitudeScale / latitudeSpan);
-  }
-
-  _MapBounds padded(double fraction) {
-    final latitudePadding = latitudeSpan * fraction;
-    final longitudePadding = longitudeSpan * fraction;
-    return _MapBounds(
-      minLatitude: minLatitude - latitudePadding,
-      maxLatitude: maxLatitude + latitudePadding,
-      minLongitude: minLongitude - longitudePadding,
-      maxLongitude: maxLongitude + longitudePadding,
-    );
-  }
-
-  bool containsPoint(_MapPoint point) {
-    return point.latitude >= minLatitude &&
-        point.latitude <= maxLatitude &&
-        point.longitude >= minLongitude &&
-        point.longitude <= maxLongitude;
-  }
-
-  bool containsLocation(DeviceLocation location) {
-    return location.latitude >= minLatitude &&
-        location.latitude <= maxLatitude &&
-        location.longitude >= minLongitude &&
-        location.longitude <= maxLongitude;
-  }
-
-  _MapPoint clampPoint(_MapPoint point) {
-    return _MapPoint(
-      point.latitude.clamp(minLatitude, maxLatitude).toDouble(),
-      point.longitude.clamp(minLongitude, maxLongitude).toDouble(),
-    );
-  }
-
-  @override
-  bool operator ==(Object other) {
-    return other is _MapBounds &&
-        other.minLatitude == minLatitude &&
-        other.maxLatitude == maxLatitude &&
-        other.minLongitude == minLongitude &&
-        other.maxLongitude == maxLongitude;
-  }
-
-  @override
-  int get hashCode =>
-      Object.hash(minLatitude, maxLatitude, minLongitude, maxLongitude);
-}
-
 class _DistrictShape {
-  const _DistrictShape({
-    required this.name,
-    required this.color,
-    required this.labelPoint,
-    required this.points,
-  });
+  const _DistrictShape({required this.name, required this.points});
 
   final String name;
-  final Color color;
-  final _MapPoint labelPoint;
   final List<_MapPoint> points;
 }
 
@@ -9218,124 +6544,13 @@ String? _districtNameForLocation(DeviceLocation location) {
 }
 
 String? _districtNameForPoint(_MapPoint point) {
-  for (final district in _HongKongMapPainter._districts.reversed) {
+  for (final district in _radarDistricts.reversed) {
     if (_containsMapPoint(district.points, point)) {
       return district.name;
     }
   }
 
   return null;
-}
-
-_DistrictShape? _districtByName(String districtName) {
-  for (final district in _HongKongMapPainter._districts) {
-    if (district.name == districtName) {
-      return district;
-    }
-  }
-  return null;
-}
-
-List<_DistrictShape> _localizedDistrictsForDistrict(String? districtName) {
-  final anchorDistrict = districtName == null
-      ? null
-      : _districtByName(districtName);
-  if (anchorDistrict == null) {
-    return const <_DistrictShape>[];
-  }
-
-  final districts = _HongKongMapPainter._districts.toList()
-    ..sort((a, b) {
-      if (a.name == anchorDistrict.name) return -1;
-      if (b.name == anchorDistrict.name) return 1;
-      final distanceCompare = _mapPointDistance(
-        a.labelPoint,
-        anchorDistrict.labelPoint,
-      ).compareTo(_mapPointDistance(b.labelPoint, anchorDistrict.labelPoint));
-      return distanceCompare != 0
-          ? distanceCompare
-          : _districtOrder(a.name).compareTo(_districtOrder(b.name));
-    });
-
-  return List.unmodifiable(districts.take(3));
-}
-
-_MapBounds? _mapBoundsForDistricts(List<_DistrictShape> districts) {
-  if (districts.isEmpty) return null;
-  final points = districts.expand((district) => district.points).toList();
-  var minLatitude = points.first.latitude;
-  var maxLatitude = points.first.latitude;
-  var minLongitude = points.first.longitude;
-  var maxLongitude = points.first.longitude;
-  for (final point in points.skip(1)) {
-    minLatitude = min(minLatitude, point.latitude);
-    maxLatitude = max(maxLatitude, point.latitude);
-    minLongitude = min(minLongitude, point.longitude);
-    maxLongitude = max(maxLongitude, point.longitude);
-  }
-  return _MapBounds(
-    minLatitude: minLatitude,
-    maxLatitude: maxLatitude,
-    minLongitude: minLongitude,
-    maxLongitude: maxLongitude,
-  ).padded(0.28);
-}
-
-double _mapPointDistance(_MapPoint a, _MapPoint b) {
-  final dLat = a.latitude - b.latitude;
-  final dLng =
-      (a.longitude - b.longitude) *
-      cos(_degreesToRadians((a.latitude + b.latitude) / 2));
-  return sqrt(dLat * dLat + dLng * dLng);
-}
-
-String _districtMapAsset(String districtName) {
-  const assets = <String, String>{
-    '屯門區': 'tuen_mun',
-    '元朗區': 'yuen_long',
-    '北區': 'north',
-    '大埔區': 'tai_po',
-    '西貢區': 'sai_kung',
-    '沙田區': 'sha_tin',
-    '荃灣區': 'tsuen_wan',
-    '葵青區': 'kwai_tsing',
-    '深水埗': 'sham_shui_po',
-    '黃大仙': 'wong_tai_sin',
-    '九龍城': 'kowloon_city',
-    '觀塘': 'kwun_tong',
-    '油尖旺': 'yau_tsim_mong',
-    '中西區': 'central_western',
-    '灣仔區': 'wan_chai',
-    '東區': 'eastern',
-    '南區': 'southern',
-    '離島區': 'islands',
-  };
-  final slug = assets[districtName];
-  return slug == null
-      ? 'assets/images/hong_kong_18_districts.jpg'
-      : 'assets/images/districts/$slug.jpg';
-}
-
-Rect _fitMapRect(Rect rect, _MapBounds bounds) {
-  final targetAspect = bounds.physicalAspectRatio;
-  final rectAspect = rect.width / rect.height;
-  if (rectAspect > targetAspect) {
-    final width = rect.height * targetAspect;
-    return Rect.fromLTWH(
-      rect.left + (rect.width - width) / 2,
-      rect.top,
-      width,
-      rect.height,
-    );
-  }
-
-  final height = rect.width / targetAspect;
-  return Rect.fromLTWH(
-    rect.left,
-    rect.top + (rect.height - height) / 2,
-    rect.width,
-    height,
-  );
 }
 
 bool _containsMapPoint(List<_MapPoint> polygon, _MapPoint point) {
@@ -9366,51 +6581,11 @@ bool _containsMapPoint(List<_MapPoint> polygon, _MapPoint point) {
   return inside;
 }
 
-Offset _projectLocationToMap(
-  DeviceLocation location,
-  Rect rect, [
-  _MapBounds bounds = _MapBounds.hongKong,
-]) {
-  return _projectMapPoint(
-    bounds.clampPoint(_MapPoint(location.latitude, location.longitude)),
-    rect,
-    bounds,
-  );
-}
-
-Offset _projectMapPoint(
-  _MapPoint point,
-  Rect rect, [
-  _MapBounds bounds = _MapBounds.hongKong,
-]) {
-  final clampedPoint = bounds.clampPoint(point);
-  final x =
-      (clampedPoint.longitude - bounds.minLongitude) / bounds.longitudeSpan;
-  final y =
-      1 - (clampedPoint.latitude - bounds.minLatitude) / bounds.latitudeSpan;
-  return Offset(rect.left + rect.width * x, rect.top + rect.height * y);
-}
-
-_MapPoint _unprojectMapPoint(
-  Offset point,
-  Rect rect, [
-  _MapBounds bounds = _MapBounds.hongKong,
-]) {
-  final longitude =
-      bounds.minLongitude +
-      ((point.dx - rect.left) / rect.width) * bounds.longitudeSpan;
-  final latitude =
-      bounds.maxLatitude -
-      ((point.dy - rect.top) / rect.height) * bounds.latitudeSpan;
-
-  return _MapPoint(latitude, longitude);
-}
-
 int _districtOrder(String districtName) {
-  final index = _HongKongMapPainter._districts.indexWhere(
+  final index = _radarDistricts.indexWhere(
     (district) => district.name == districtName,
   );
-  return index == -1 ? _HongKongMapPainter._districts.length : index;
+  return index == -1 ? _radarDistricts.length : index;
 }
 
 class CommunityNetworkPage extends StatelessWidget {
@@ -13366,7 +10541,7 @@ class LightRadarController extends ChangeNotifier {
             map['message'],
             fallback: nextLocation.isInsideHongKong
                 ? '定位成功'
-                : '定位成功，位置在香港地圖範圍外',
+                : '定位成功，位置在香港十八區範圍外',
           );
         }
         return nextLocation;
@@ -14433,9 +11608,8 @@ class MeshChatService extends ChangeNotifier {
     );
   }
 
-  List<MeshMessage> get publicRoomMessages => messages
-      .where((message) => message.roomId == _defaultRoomId)
-      .toList();
+  List<MeshMessage> get publicRoomMessages =>
+      messages.where((message) => message.roomId == _defaultRoomId).toList();
 
   void restorePublicChatHistory(Iterable<MeshMessage> history) {
     for (final message in history) {

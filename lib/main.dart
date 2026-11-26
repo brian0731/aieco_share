@@ -39,16 +39,70 @@ class LifebuoyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: '社區救生圈',
-    theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff006a61)),
-      useMaterial3: true,
-    ),
+    theme: _lifebuoyTheme(),
     home: const LifebuoyHome(),
   );
 }
 
+ThemeData _lifebuoyTheme() {
+  final colors = ColorScheme.fromSeed(seedColor: const Color(0xff006a61));
+  const corners = BorderRadius.all(Radius.circular(12));
+  final buttonShape = RoundedRectangleBorder(borderRadius: corners);
+  const buttonPadding = EdgeInsets.symmetric(horizontal: 14, vertical: 10);
+  return ThemeData(
+    colorScheme: colors,
+    scaffoldBackgroundColor: const Color(0xfff3f7f5),
+    appBarTheme: AppBarTheme(
+      backgroundColor: colors.surface,
+      scrolledUnderElevation: 0,
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      height: 68,
+      backgroundColor: colors.surface,
+      indicatorColor: colors.secondaryContainer,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(0, 44),
+        padding: buttonPadding,
+        shape: buttonShape,
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 44),
+        padding: buttonPadding,
+        shape: buttonShape,
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        minimumSize: const Size(0, 44),
+        padding: buttonPadding,
+        shape: buttonShape,
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: colors.surface,
+      border: const OutlineInputBorder(borderRadius: corners),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: corners,
+        borderSide: BorderSide(color: colors.outlineVariant),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+    ),
+  );
+}
+
 class LifebuoyHome extends StatefulWidget {
-  const LifebuoyHome({super.key});
+  const LifebuoyHome({super.key, this.fetchPublicBoard});
+
+  final Future<Json> Function()? fetchPublicBoard;
 
   @override
   State<LifebuoyHome> createState() => _LifebuoyHomeState();
@@ -94,6 +148,9 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   String kind = 'request';
   String? error;
   bool busy = false;
+  bool boardLoading = true;
+  bool boardUnavailable = false;
+  Future<void>? boardRequest;
   int chatRevision = 0;
   final chatHistory = LifebuoyChatHistory(relayUrl: LifebuoyChat.relay);
   int tab = 0;
@@ -102,6 +159,11 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
 
   void selectPostFilter(String value) => setState(() => postFilter = value);
   void selectTimeTab(_TimeTab value) => setState(() => timeTab = value);
+  void openTimeBankServices() => setState(() {
+    tab = 1;
+    timeTab = _TimeTab.services;
+    timeSearch.clear();
+  });
   void updateSearch() => setState(() {});
   void updateBlockedMembers(Map<String, String> next) =>
       setState(() => blockedMembers.value = next);
@@ -110,7 +172,7 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   void initState() {
     super.initState();
     if (biometricPlatform) unawaited(checkBiometricSession());
-    unawaited(run(refresh));
+    unawaited(loadPublicBoard());
     unawaited(restoreBlockedMembers());
   }
 
@@ -165,6 +227,15 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
       final response = await request.close().timeout(
         const Duration(seconds: 12),
       );
+      if (path == 'board' &&
+          (response.statusCode == 408 ||
+              response.statusCode == 429 ||
+              response.statusCode >= 500)) {
+        throw HttpException(
+          'Public board HTTP ${response.statusCode}',
+          uri: url,
+        );
+      }
       final body = await utf8.decoder
           .bind(response)
           .join()
@@ -196,6 +267,10 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
           'registration_unavailable' => '暫時無法註冊，請稍後重試',
           'try_again_later' => '嘗試次數過多，請稍後再試',
           'minutes_mismatch' => '分鐘數與約定不符',
+          'service_cancelled' => '這項配對已取消，請返回列表。',
+          'service_not_cancellable' => '服務已入帳或更正，無法取消。',
+          'not_awaiting_agreement' ||
+          'not_awaiting_confirmation' => '服務狀態已更新，請重新整理。',
           'already_matched' => '此服務已有配對',
           'rating_exists' => '你已為這筆紀錄評分。',
           'rating_unavailable' => '這筆紀錄已無法評分。',
@@ -230,16 +305,47 @@ class _LifebuoyHomeState extends State<LifebuoyHome> {
   }
 
   Future<void> refresh() async {
-    final current = await api(activeToken == null ? 'board' : 'home');
+    if (activeToken == null) return loadPublicBoard();
+    final session = activeToken;
+    final current = await api('home');
+    if (activeToken != session) return;
     if (mounted) setState(() => home = current);
   }
 
-  Future<void> loadPublicBoard() async {
+  Future<void> loadPublicBoard() =>
+      boardRequest ??= fetchBoard().whenComplete(() => boardRequest = null);
+
+  Future<void> fetchBoard() async {
+    if (!mounted || activeToken != null) return;
+    setState(() {
+      boardLoading = true;
+      boardUnavailable = false;
+    });
     try {
-      final board = await api('board');
+      final load = widget.fetchPublicBoard ?? () => api('board');
+      Json board;
+      try {
+        board = await load();
+      } catch (error) {
+        if (error is! SocketException &&
+            error is! TimeoutException &&
+            error is! HttpException) {
+          rethrow;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (!mounted || activeToken != null) return;
+        board = await load();
+      }
+      if (board['posts'] is! List || board['items'] is! List) {
+        throw const FormatException('Invalid public board response');
+      }
       if (mounted && activeToken == null) setState(() => home = board);
     } catch (_) {
-      // The session error is already shown by the action that triggered it.
+      if (mounted && activeToken == null) {
+        setState(() => boardUnavailable = true);
+      }
+    } finally {
+      if (mounted) setState(() => boardLoading = false);
     }
   }
 

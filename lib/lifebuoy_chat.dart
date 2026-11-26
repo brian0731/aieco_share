@@ -379,7 +379,6 @@ class _LifebuoyChatState extends State<LifebuoyChat> {
                 onPressed: busy || !mesh.onlineConfigured
                     ? null
                     : showNetworkConnection,
-                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
                 icon: Icon(
                   mesh.networkBridge.connected
                       ? Icons.link

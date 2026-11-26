@@ -27,7 +27,6 @@ class LifebuoySearchField extends StatelessWidget {
     decoration: InputDecoration(
       labelText: label,
       prefixIcon: const Icon(Icons.search),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
       isDense: true,
       suffixIcon: ValueListenableBuilder<TextEditingValue>(
         valueListenable: controller,

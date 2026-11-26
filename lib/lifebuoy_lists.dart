@@ -57,54 +57,96 @@ class _ListCard extends StatelessWidget {
       elevation: 0,
       color: colors.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: colors.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Row(
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SizedBox(
-                width: 42,
-                height: 42,
-                child: Icon(icon, size: 21, color: accent),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (label != null)
-                    Text(
-                      label!,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: accent,
-                      ),
-                    ),
-                  Text(
-                    title,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  if (details != null) ...[const SizedBox(height: 5), details!],
-                  if (action != null) ...[const SizedBox(height: 6), action!],
-                ],
-              ),
+                  child: SizedBox(
+                    width: 42,
+                    height: 42,
+                    child: Icon(icon, size: 21, color: accent),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (label != null)
+                        Text(
+                          label!,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: accent,
+                          ),
+                        ),
+                      Text(
+                        title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (details != null) ...[
+                        const SizedBox(height: 5),
+                        details!,
+                      ],
+                    ],
+                  ),
+                ),
+                ?menu,
+              ],
             ),
-            ?menu,
+            if (action != null) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Divider(height: 1),
+              ),
+              SizedBox(width: double.infinity, child: action!),
+            ],
           ],
         ),
       ),
     );
   }
+}
+
+class _CardActions extends StatelessWidget {
+  const _CardActions({this.secondary, this.primary});
+
+  final Widget? secondary;
+  final Widget? primary;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (secondary == null || primary == null) return (primary ?? secondary)!;
+      if (constraints.maxWidth < 220 ||
+          MediaQuery.textScalerOf(context).scale(14) > 20) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [primary!, const SizedBox(height: 8), secondary!],
+        );
+      }
+      return Row(
+        children: [
+          Expanded(child: secondary!),
+          const SizedBox(width: 8),
+          Expanded(child: primary!),
+        ],
+      );
+    },
+  );
 }
 
 extension _LifebuoyLists on _LifebuoyHomeState {
@@ -138,6 +180,28 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       ],
     ),
   );
+
+  Widget publicBoardStatus() {
+    if (boardUnavailable) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          children: [
+            Text(home == null ? '暫時未能載入社區內容' : '暫時未能更新，正顯示上次載入的內容'),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => run(refresh),
+              icon: const Icon(Icons.refresh),
+              label: const Text('重試'),
+            ),
+          ],
+        ),
+      );
+    }
+    return home == null && boardLoading
+        ? emptyList(Icons.cloud_download_outlined, '正在載入社區內容…')
+        : const SizedBox.shrink();
+  }
 
   String shortDate(Object? value) {
     final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
@@ -212,7 +276,8 @@ extension _LifebuoyLists on _LifebuoyHomeState {
             style: Theme.of(context).textTheme.labelSmall,
           ),
         ),
-      if (posts.isEmpty && !busy)
+      if (account == null) publicBoardStatus(),
+      if (posts.isEmpty && !busy && home != null)
         emptyList(
           Icons.forum_outlined,
           query.trim().isEmpty ? '目前沒有這類貼文' : '找不到符合條件的貼文',
@@ -348,7 +413,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       tone: free ? const Color(0xff705923) : null,
       label:
           '${_postKinds[type] ?? '社區貼文'}${matched
-              ? ' · 已配對'
+              ? (post['match_state'] == 'cancelled' ? ' · 配對已取消' : ' · 已配對')
               : mine
               ? ' · 我的貼文'
               : ''}',
@@ -370,15 +435,25 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       ),
       action: free || mine || matched
           ? null
-          : OutlinedButton(
+          : FilledButton.tonalIcon(
               onPressed: busy
                   ? null
                   : account == null
                   ? signin
-                  : () => run(() => mutate('posts/${post['id']}/match', {})),
-              child: Text(isRequest ? '提供協助' : '請求支援'),
+                  : () => run(() => joinTimeBank(post)),
+              icon: const Icon(Icons.add_task_outlined, size: 18),
+              label: Text(isRequest ? '提供協助' : '請求支援'),
             ),
     );
+  }
+
+  Future<void> joinTimeBank(Json post) async {
+    await mutate('posts/${post['id']}/match', {'minutes': post['minutes']});
+    if (!mounted) return;
+    openTimeBankServices();
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已加入我的服務')));
   }
 
   Widget timeBank() {
@@ -397,7 +472,20 @@ extension _LifebuoyLists on _LifebuoyHomeState {
               )
               .toList();
     final matchingServices = list('services')
-        .where((service) => matchesLifebuoySearch(query, [service['title']]))
+        .where(
+          (service) => matchesLifebuoySearch(query, [
+            service['title'],
+            service['area'],
+            service['payer_name'],
+            service['provider_name'],
+          ]),
+        )
+        .toList();
+    final activeServices = matchingServices
+        .where((service) => serviceIsActive(service))
+        .toList();
+    final history = matchingServices
+        .where((service) => !serviceIsActive(service))
         .toList();
     final entries = list('entries')
         .where(
@@ -412,7 +500,7 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       LifebuoyIllustration(
         scene: 'time',
         color: const Color(0xffe0eee1),
-        height: 108,
+        height: 120,
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: Column(
@@ -497,7 +585,8 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       ),
       const SizedBox(height: 12),
       if (!signedIn) ...[
-        if (publicServices.isEmpty && !busy)
+        publicBoardStatus(),
+        if (publicServices.isEmpty && !busy && home != null)
           emptyList(
             Icons.assignment_outlined,
             searching ? '找不到符合的服務' : '暫無公開服務',
@@ -511,7 +600,10 @@ extension _LifebuoyLists on _LifebuoyHomeState {
                 Icons.assignment_outlined,
                 searching ? '找不到符合的服務' : '暫無已配對服務',
               ),
-            for (final service in matchingServices) serviceCard(service),
+            if (activeServices.isNotEmpty) sectionTitle('進行中'),
+            for (final service in activeServices) serviceCard(service),
+            if (history.isNotEmpty) sectionTitle('服務紀錄'),
+            for (final service in history) serviceCard(service),
           ],
           _TimeTab.entries => [
             if (entries.isEmpty)
@@ -563,28 +655,30 @@ extension _LifebuoyLists on _LifebuoyHomeState {
     );
   }
 
+  bool serviceIsActive(Json service) =>
+      service['state'] == 'agreement' || service['state'] == 'pending';
+
   Widget serviceCard(Json service) {
     final payer = service['payer_id'] == account?['id'];
     final side = payer ? 'payer' : 'provider';
-    final other = payer ? 'provider' : 'payer';
     final state = service['state'];
     final step = state == 'agreement' ? 'agreed' : 'confirmed';
     final mine =
         service['${side}_$step'] == 1 || service['${side}_$step'] == true;
-    final theirs =
-        service['${other}_$step'] == 1 || service['${other}_$step'] == true;
-    final pending = state == 'agreement' || state == 'pending';
+    final pending = serviceIsActive(service);
     final action = pending && !mine
         ? (state == 'agreement' ? 'agree' : 'confirm')
         : null;
     final status = switch (state) {
-      'agreement' => mine ? '等對方同意時間' : '待你同意時間',
-      'pending' => mine ? '等對方確認完成' : '待你確認完成',
+      'agreement' => mine ? '等對方接受配對' : '待你接受配對',
+      'pending' => mine ? '等對方確認完成' : '服務進行中',
       'settled' => '已入帳',
       'reversed' => '已更正',
       _ => '已取消',
     };
     final amount = _signedMinutes(service['minutes'], credit: !payer);
+    final partner = service[payer ? 'provider_name' : 'payer_name'] as String?;
+    final path = 'services/${service['id']}';
     return _ListCard(
       icon: payer ? Icons.north_east : Icons.south_west,
       label: '${payer ? '找支援' : '提供協助'} · $status',
@@ -592,31 +686,70 @@ extension _LifebuoyLists on _LifebuoyHomeState {
       details: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (partner != null && partner.isNotEmpty) Text('對方 · $partner'),
           if (state == 'cancelled' || state == 'reversed')
             Text('原定 $amount')
           else
             _Amount(pending ? '預計 $amount' : amount, credit: !payer),
-          if (pending)
-            Text('你${mine ? '已' : '未'}確認 · 對方${theirs ? '已' : '未'}確認'),
+          if (state == 'pending') const Text('雙方確認完成後才會入帳'),
         ],
       ),
-      action: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (action != null)
-            FilledButton.tonal(
-              onPressed: busy
-                  ? null
-                  : () => run(
-                      () => mutate('services/${service['id']}/$action', {
-                        'minutes': service['minutes'],
-                      }),
+      action: state == 'cancelled'
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (pending)
+                  _CardActions(
+                    secondary: OutlinedButton(
+                      onPressed: busy ? null : () => cancelService(service),
+                      child: const Text('取消服務'),
                     ),
-              child: Text(action == 'agree' ? '同意時數' : '確認完成'),
+                    primary: action == null
+                        ? null
+                        : FilledButton(
+                            onPressed: busy
+                                ? null
+                                : () => run(
+                                    () => mutate('$path/$action', {
+                                      'minutes': service['minutes'],
+                                    }),
+                                  ),
+                            child: Text(action == 'agree' ? '接受配對' : '確認完成'),
+                          ),
+                  ),
+                tradeActions('services', service),
+              ],
             ),
-          tradeActions('services', service),
+    );
+  }
+
+  Future<void> cancelService(Json service) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('取消這項服務？'),
+        content: const Text('配對會結束，雙方都不會入帳。如需重新配對，可刊登新貼文。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('返回'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('取消服務'),
+          ),
         ],
       ),
     );
+    if (confirmed != true || !mounted) return;
+    await run(() async {
+      await mutate('services/${service['id']}/cancel', {});
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('服務已取消，沒有時數入帳')));
+      }
+    });
   }
 }

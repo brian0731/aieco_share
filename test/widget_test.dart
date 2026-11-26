@@ -1032,10 +1032,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('光之雷達'), findsWidgets);
-    expect(find.text('香港18區離線地圖'), findsOneWidget);
+    expect(find.text('暫無雷達活動'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('offline-hong-kong-18-district-map')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(find.text('最近10個光點'), findsOneWidget);
     expect(find.text('請先定位'), findsOneWidget);
@@ -1057,7 +1057,8 @@ void main() {
     expect(find.text('社區資訊'), findsWidgets);
     expect(find.text('社區救生圈'), findsOneWidget);
     expect(find.text('社區共鳴牆'), findsOneWidget);
-    expect(find.text('守望地圖'), findsOneWidget);
+    expect(find.text('守望地圖'), findsNothing);
+    expect(find.text('AED 地圖'), findsNothing);
     expect(find.text('SOS 燈'), findsOneWidget);
     expect(find.text('https://www.aieco.hk'), findsNothing);
   });

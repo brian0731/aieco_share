@@ -57,35 +57,83 @@ extension _ExchangePages on _LifebuoyHomeState {
   }
 
   Future<void> propose(Json wanted) async {
-    final items = list('items').where(
-      (item) => item['owner_id'] == account?['id'] && item['reserved'] == 0,
-    );
-    final offered = await showDialog<Json>(
+    final items = list('items')
+        .where(
+          (item) => item['owner_id'] == account?['id'] && !_isReserved(item),
+        )
+        .toList();
+    final form = GlobalKey<FormState>();
+    Json? offered = items.firstOrNull;
+    var meeting = '';
+    final send = await showDialog<bool>(
       context: context,
-      builder: (dialog) => SimpleDialog(
-        title: const Text('選擇要交換的物品'),
-        children: [
-          if (items.isEmpty) const ListTile(title: Text('請先刊登要提供的物品')),
-          for (final item in items)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(dialog, item),
-              child: Text(item['title'].toString()),
+      builder: (dialog) => AlertDialog(
+        title: Text('交換 ${wanted['title']}'),
+        scrollable: true,
+        content: items.isEmpty
+            ? const Text('請先刊登要提供的物品。')
+            : Form(
+                key: form,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<Json>(
+                      initialValue: offered,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: '我提供的物品'),
+                      items: [
+                        for (final item in items)
+                          DropdownMenuItem(
+                            value: item,
+                            child: Text(
+                              item['title'].toString(),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (item) => offered = item,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      decoration: const InputDecoration(labelText: '公共交收地點與時間'),
+                      validator: (text) => text == null || text.trim().isEmpty
+                          ? '請填寫交收地點與時間'
+                          : null,
+                      onSaved: (text) => meeting = text!.trim(),
+                    ),
+                  ],
+                ),
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: Text(items.isEmpty ? '關閉' : '取消'),
+          ),
+          if (items.isNotEmpty)
+            FilledButton(
+              onPressed: () {
+                if (!form.currentState!.validate()) return;
+                form.currentState!.save();
+                Navigator.pop(dialog, true);
+              },
+              child: const Text('送出交換提案'),
             ),
         ],
       ),
     );
-    if (offered == null || !mounted) return;
-    final values = await fields('提議交收', ['公共交收地點與時間']);
-    if (values == null || !mounted) return;
+    if (send != true || offered == null || !mounted) return;
     await run(
       () => mutate('exchanges', {
         'id': newId(),
-        'offered': offered['id'],
+        'offered': offered!['id'],
         'wanted': wanted['id'],
-        'meeting': values.single,
+        'meeting': meeting,
       }),
     );
   }
+
+  bool _isReserved(Json item) =>
+      item['reserved'] == 1 || item['reserved'] == true;
 
   Widget exchangeBoard() {
     final query = exchangeSearch.text;
@@ -132,7 +180,8 @@ extension _ExchangePages on _LifebuoyHomeState {
         onChanged: updateSearch,
       ),
       const SizedBox(height: 12),
-      if (items.isEmpty && !busy)
+      if (account == null) publicBoardStatus(),
+      if (items.isEmpty && !busy && home != null)
         emptyList(
           Icons.inventory_2_outlined,
           searching ? '找不到符合的物品' : '目前沒有可瀏覽的物品',
@@ -144,15 +193,15 @@ extension _ExchangePages on _LifebuoyHomeState {
           menu: item['owner_id'] == account?['id']
               ? null
               : listingSafetyMenu(item, item: true),
-          label: item['reserved'] == 1
+          label: _isReserved(item)
               ? '已保留'
               : item['owner_id'] == account?['id']
               ? '我的物品'
               : '可交換',
           details: Text('想換 ${item['wanted']} · ${_districtArea(item)}'),
-          action: item['reserved'] == 1 || item['owner_id'] == account?['id']
+          action: _isReserved(item) || item['owner_id'] == account?['id']
               ? null
-              : OutlinedButton.icon(
+              : FilledButton.tonalIcon(
                   onPressed: busy
                       ? null
                       : account == null
@@ -181,17 +230,27 @@ extension _ExchangePages on _LifebuoyHomeState {
             _ => '已取消',
           },
           details: Text(exchange['meeting'].toString()),
-          action: Wrap(
-            spacing: 8,
+          action: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (exchange['state'] == 'proposed' &&
-                  exchange['owner_id'] == account?['id'])
-                exchangeAction(exchange, 'accept', '接受並保留'),
-              if (exchange['state'] == 'reserved' && exchange['expired'] != 1)
-                exchangeAction(exchange, 'handoff', '確認交收'),
               if (exchange['state'] == 'proposed' ||
                   exchange['state'] == 'reserved')
-                exchangeAction(exchange, 'cancel', '取消並釋出'),
+                _CardActions(
+                  secondary: exchangeAction(exchange, 'cancel', '取消交換'),
+                  primary:
+                      exchange['state'] == 'proposed' &&
+                          exchange['owner_id'] == account?['id']
+                      ? exchangeAction(exchange, 'accept', '接受交換')
+                      : exchange['state'] == 'reserved' &&
+                            exchange['expired'] != 1 &&
+                            exchange['expired'] != true &&
+                            exchange[exchange['owner_id'] == account?['id']
+                                    ? 'owner_confirmed'
+                                    : 'proposer_confirmed'] ==
+                                0
+                      ? exchangeAction(exchange, 'handoff', '確認交收')
+                      : null,
+                ),
               tradeActions('exchanges', exchange),
             ],
           ),
@@ -200,14 +259,14 @@ extension _ExchangePages on _LifebuoyHomeState {
     ]);
   }
 
-  Widget exchangeAction(Json exchange, String action, String label) =>
-      TextButton(
-        onPressed: busy
-            ? null
-            : () =>
-                  run(() => mutate('exchanges/${exchange['id']}/$action', {})),
-        child: Text(label),
-      );
+  Widget exchangeAction(Json exchange, String action, String label) {
+    final press = busy
+        ? null
+        : () => run(() => mutate('exchanges/${exchange['id']}/$action', {}));
+    return action == 'cancel'
+        ? OutlinedButton(onPressed: press, child: Text(label))
+        : FilledButton(onPressed: press, child: Text(label));
+  }
 
   Widget tradeActions(String resource, Json trade) {
     final kind = resource == 'services' ? 'service' : 'exchange';
